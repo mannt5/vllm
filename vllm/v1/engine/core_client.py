@@ -148,6 +148,9 @@ class EngineCoreClient(ABC):
                            max_size: Optional[int] = None) -> None:
         raise NotImplementedError
 
+    def save_remote_state(self, url: str):
+        raise NotImplementedError
+
     def collective_rpc(self,
                        method: Union[str, Callable[..., _R]],
                        timeout: Optional[float] = None,
@@ -198,6 +201,9 @@ class EngineCoreClient(ABC):
                                        path: str,
                                        pattern: Optional[str] = None,
                                        max_size: Optional[int] = None) -> None:
+        raise NotImplementedError
+
+    async def save_remote_state_async(self, url: str):
         raise NotImplementedError
 
     async def collective_rpc_async(
@@ -274,6 +280,9 @@ class InprocClient(EngineCoreClient):
                            pattern: Optional[str] = None,
                            max_size: Optional[int] = None) -> None:
         self.engine_core.save_sharded_state(path, pattern, max_size)
+
+    def save_remote_state(self, url):
+        self.engine_core.save_remote_state(url)
 
     def collective_rpc(self,
                        method: Union[str, Callable[..., _R]],
@@ -703,6 +712,9 @@ class SyncMPClient(MPClient):
                            max_size: Optional[int] = None) -> None:
         self.call_utility("save_sharded_state", path, pattern, max_size)
 
+    def save_remote_state(self, url):
+        self.call_utility("save_remote_state", url)
+
 
 class AsyncMPClient(MPClient):
     """Asyncio-compatible client for multi-proc EngineCore."""
@@ -889,6 +901,9 @@ class AsyncMPClient(MPClient):
                                        max_size: Optional[int] = None) -> None:
         await self.call_utility_async("save_sharded_state", path, pattern,
                                       max_size)
+
+    async def save_remote_state_async(self, url):
+        await self.call_utility_async("save_remote_state", url)
 
     async def collective_rpc_async(
             self,
