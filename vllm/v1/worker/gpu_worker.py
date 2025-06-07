@@ -17,7 +17,7 @@ from vllm.distributed import (ensure_model_parallel_initialized,
                               set_custom_all_reduce)
 from vllm.distributed.kv_transfer import (ensure_kv_transfer_initialized,
                                           get_kv_transfer_group,
-                                          has_kv_transfer_group)
+                                          is_v1_kv_transfer_group)
 from vllm.distributed.parallel_state import get_pp_group, get_tp_group
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
@@ -329,18 +329,20 @@ class Worker(WorkerBase):
             output = EMPTY_MODEL_RUNNER_OUTPUT
 
         assert isinstance(output, ModelRunnerOutput)
-        if has_kv_transfer_group():
-            finished_sending, finished_recving = (
-                get_kv_transfer_group().get_finished(
-                    scheduler_output.finished_req_ids))
-            if finished_sending or finished_recving:
+        if is_v1_kv_transfer_group():
+            connector = get_kv_transfer_group()
+            finished_sending, finished_recving = connector.get_finished(
+                scheduler_output.finished_req_ids)
+            invalid_block_ids = connector.get_block_ids_with_load_errors()
+            if any((finished_sending, finished_recving, invalid_block_ids)):
                 if output is EMPTY_MODEL_RUNNER_OUTPUT:
                     output = copy.copy(EMPTY_MODEL_RUNNER_OUTPUT)
                 output.finished_sending = finished_sending
                 output.finished_recving = finished_recving
+                output.invalid_block_ids = invalid_block_ids
 
             # Clear KVConnector state for this step.
-            get_kv_transfer_group().clear_connector_metadata()
+            connector.clear_connector_metadata()
 
             # with a connector, the scheduler expects output from all workers
             return output
