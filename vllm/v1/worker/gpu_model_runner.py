@@ -579,12 +579,12 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         self,
         scheduler_output: "SchedulerOutput",
     ) -> tuple[dict[str, Any], bool, torch.Tensor,
-               Optional[SpecDecodeMetadata], np.ndarray]:
+               Optional[SpecDecodeMetadata], np.ndarray, torch.Tensor]:
         """
         :return: tuple[
             attn_metadata: layer-to-attention_metadata mapping,
             attention_cuda_graphs: whether attention can run in cudagraph
-            logits_indices, spec_decode_metadata
+            logits_indices, spec_decode_metadata, decode_mask
         ]
         """
         total_num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
@@ -601,11 +601,18 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         tokens = [scheduler_output.num_scheduled_tokens[i] for i in req_ids]
         num_scheduled_tokens = np.array(tokens, dtype=np.int32)
         max_num_scheduled_tokens = max(tokens)
+        req_last_prompt_index = np.array([
+            self.requests[req_id].num_prompt_tokens - 1 
+            for req_id in self.input_batch.req_ids],
+            dtype=np.int32
+        )
 
         # Get request indices.
         # E.g., [2, 5, 3] -> [0, 0, 1, 1, 1, 1, 1, 2, 2, 2]
         req_indices = np.repeat(self.arange_np[:num_reqs],
                                 num_scheduled_tokens)
+        last_prompt_indices_np = np.repeat(req_last_prompt_index,
+                                        num_scheduled_tokens)
 
         # cu_num_tokens: [2, 5, 3] -> [2, 7, 10]
         # arange: [0, 1, 0, 1, 2, 3, 4, 0, 1, 2]
@@ -617,6 +624,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         np.add(self.input_batch.num_computed_tokens_cpu[req_indices],
                arange,
                out=positions_np)
+
+        decode_mask_np = positions_np >= last_prompt_indices_np
 
         # Calculate M-RoPE positions.
         # Only relevant for models using M-RoPE (e.g, Qwen2-VL)
@@ -765,8 +774,10 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         if self.lora_config:
             self.set_active_loras(self.input_batch, num_scheduled_tokens)
 
+        decode_mask = torch.tensor(decode_mask_np, device=self.device)
+
         return (attn_metadata, attention_cuda_graphs, logits_indices,
-                spec_decode_metadata, num_scheduled_tokens)
+                spec_decode_metadata, num_scheduled_tokens, decode_mask)
 
     def _compute_cascade_attn_prefix_len(
         self,
@@ -1293,7 +1304,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         # Prepare the decoder inputs.
         (attn_metadata, attention_cuda_graphs, logits_indices,
          spec_decode_metadata,
-         num_scheduled_tokens_np) = (self._prepare_inputs(scheduler_output))
+         num_scheduled_tokens_np,
+         decode_mask) = (self._prepare_inputs(scheduler_output))
         num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
         if (self.use_cuda_graph
                 and num_scheduled_tokens <= self.cudagraph_batch_sizes[-1]):
@@ -1546,6 +1558,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 aux_hidden_states,
                 spec_decode_metadata,
                 attn_metadata,
+                mm_embeds,
             )
 
         # Clear KVConnector state after all KVs are generated.
@@ -1577,6 +1590,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         aux_hidden_states: Optional[torch.Tensor],
         spec_decode_metadata: Optional[SpecDecodeMetadata],
         attn_metadata: dict[str, Any],
+        mm_embeds: list[torch.Tensor],
     ) -> list[list[int]]:
         num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
         if self.speculative_config.method == "ngram":
@@ -1605,24 +1619,6 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             )
         elif self.speculative_config.use_eagle():
             assert isinstance(self.drafter, EagleProposer)
-            # TODO(woosuk): Refactor the loop.
-            next_token_ids: list[int] = []
-            for i, token_ids in enumerate(sampled_token_ids):
-                if token_ids:
-                    # Common case.
-                    next_token_id = token_ids[-1]
-                else:
-                    # Partial prefill (rare case).
-                    # Get the next token id from the request state.
-                    req_id = self.input_batch.req_ids[i]
-                    req_state = self.requests[req_id]
-                    seq_len = (req_state.num_computed_tokens +
-                               scheduler_output.num_scheduled_tokens[req_id])
-                    next_token_id = req_state.get_token_id(seq_len)
-                next_token_ids.append(next_token_id)
-            next_token_ids = torch.tensor(next_token_ids,
-                                          dtype=torch.int32,
-                                          device=self.device)
             # At this moment, we assume all eagle layers belong to the same KV
             # cache group, thus using the same attention metadata.
             eagle_attn_metadata = attn_metadata[
@@ -1675,11 +1671,51 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                     target_hidden_states = hidden_states[token_indices]
                 target_slot_mapping = eagle_attn_metadata.slot_mapping[
                     token_indices]
-            mm_embeds = None
-            if self.is_multimodal_model:
-                mm_embeds = self._gather_mm_embeddings(scheduler_output,
+            draft_mm_embeds = mm_embeds if mm_embeds else None
+            if (
+                self.is_multimodal_model and
+                self.speculative_config.eagle_shift_prefill_token()):
+                draft_mm_embeds = self._gather_mm_embeddings(scheduler_output,
                                                        shift_computed_tokens=1)
 
+            # TODO(woosuk): Refactor the loop.
+            next_token_ids: list[int] = []
+            prefill_first_hiddens = []
+            full_prefill_mask = []
+            for i, token_ids in enumerate(sampled_token_ids):
+                req_id = self.input_batch.req_ids[i]
+                req_state = self.requests[req_id]
+                if req_state.prefill_hidden_states is None:
+                    req_state.prefill_hidden_states = target_hidden_states[
+                        cu_num_tokens[i]
+                    ]
+                prefill_first_hiddens.append(req_state.prefill_hidden_states)
+                num_prompt_tokens = req_state.num_prompt_tokens
+                num_scheduled_tokens = scheduler_output.num_scheduled_tokens[req_id]
+                full_prefill_mask.append(
+                    req_state.num_computed_tokens < num_prompt_tokens 
+                    and req_state.num_computed_tokens+num_scheduled_tokens >= num_prompt_tokens)
+                if token_ids:
+                    # Common case.
+                    next_token_id = token_ids[-1]
+                else:
+                    # Partial prefill (rare case).
+                    # Get the next token id from the request state.
+                    seq_len = (req_state.num_computed_tokens +
+                               scheduler_output.num_scheduled_tokens[req_id])
+                    next_token_id = req_state.get_token_id(seq_len)
+                    last_hidden_index = cu_num_tokens[i + 1] - 1
+                    req_state.prefill_hidden_states = target_hidden_states[
+                        last_hidden_index]
+                next_token_ids.append(next_token_id)
+            next_token_ids = torch.tensor(next_token_ids,
+                                          dtype=torch.int32,
+                                          device=self.device)
+            prefill_first_hiddens = torch.cat(prefill_first_hiddens,
+                                              dim=0)
+            full_prefill_mask = torch.tensor(full_prefill_mask,
+                                             dtype=torch.bool,
+                                             device=self.device)
             draft_token_ids = self.drafter.propose(
                 target_token_ids=target_token_ids,
                 target_positions=target_positions,
@@ -1689,7 +1725,10 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 cu_num_tokens=cu_num_tokens,
                 block_table=block_table,
                 sampling_metadata=sampling_metadata,
-                mm_embeds=mm_embeds,
+                mm_embeds=draft_mm_embeds,
+                prefill_first_hiddens=prefill_first_hiddens,
+                decode_mask=decode_mask,
+                full_prefill_mask=full_prefill_mask,
             )
             spec_token_ids = draft_token_ids.tolist()
         return spec_token_ids
