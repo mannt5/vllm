@@ -602,17 +602,17 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         num_scheduled_tokens = np.array(tokens, dtype=np.int32)
         max_num_scheduled_tokens = max(tokens)
         req_last_prompt_index = np.array([
-            self.requests[req_id].num_prompt_tokens - 1 
-            for req_id in self.input_batch.req_ids],
-            dtype=np.int32
-        )
+            self.requests[req_id].num_prompt_tokens - 1
+            for req_id in self.input_batch.req_ids
+        ],
+                                         dtype=np.int32)
 
         # Get request indices.
         # E.g., [2, 5, 3] -> [0, 0, 1, 1, 1, 1, 1, 2, 2, 2]
         req_indices = np.repeat(self.arange_np[:num_reqs],
                                 num_scheduled_tokens)
         last_prompt_indices_np = np.repeat(req_last_prompt_index,
-                                        num_scheduled_tokens)
+                                           num_scheduled_tokens)
 
         # cu_num_tokens: [2, 5, 3] -> [2, 7, 10]
         # arange: [0, 1, 0, 1, 2, 3, 4, 0, 1, 2]
@@ -1559,6 +1559,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 spec_decode_metadata,
                 attn_metadata,
                 mm_embeds,
+                decode_mask,
             )
 
         # Clear KVConnector state after all KVs are generated.
@@ -1591,6 +1592,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         spec_decode_metadata: Optional[SpecDecodeMetadata],
         attn_metadata: dict[str, Any],
         mm_embeds: list[torch.Tensor],
+        decode_mask: torch.Tensor,
     ) -> list[list[int]]:
         num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
         if self.speculative_config.method == "ngram":
@@ -1662,8 +1664,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                     num_tokens,
                 )
                 target_token_ids = self.input_ids[token_indices]
-                # TODO(woosuk): Support M-RoPE.
                 target_positions = self.positions[token_indices]
+                decode_mask = decode_mask[token_indices]
                 if self.use_aux_hidden_state_outputs:
                     target_hidden_states = torch.cat(
                         [h[token_indices] for h in aux_hidden_states], dim=-1)
@@ -1672,29 +1674,36 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 target_slot_mapping = eagle_attn_metadata.slot_mapping[
                     token_indices]
             draft_mm_embeds = mm_embeds if mm_embeds else None
-            if (
-                self.is_multimodal_model and
-                self.speculative_config.eagle_shift_prefill_token()):
-                draft_mm_embeds = self._gather_mm_embeddings(scheduler_output,
-                                                       shift_computed_tokens=1)
+            if envs.VLLM_DECODE_ONLY_ATTN:
+                draft_mm_embeds = None
+            elif (self.is_multimodal_model
+                  and self.speculative_config.eagle_shift_prefill_token()):
+                draft_mm_embeds = self._gather_mm_embeddings(
+                    scheduler_output, shift_computed_tokens=1)
 
             # TODO(woosuk): Refactor the loop.
             next_token_ids: list[int] = []
+            # Get the first token's hidden state from cached for each request.
+            # This is used in non-shifted prefill for eagle draft.
             prefill_first_hiddens = []
             full_prefill_mask = []
             for i, token_ids in enumerate(sampled_token_ids):
                 req_id = self.input_batch.req_ids[i]
                 req_state = self.requests[req_id]
+                # Initialize the prefill hidden state if not set.,
+                # from experimental results, the last token hidden state
+                # works very well for init the first prefill hidden state.
                 if req_state.prefill_hidden_states is None:
                     req_state.prefill_hidden_states = target_hidden_states[
-                        cu_num_tokens[i]
-                    ]
+                        cu_num_tokens[i]]
                 prefill_first_hiddens.append(req_state.prefill_hidden_states)
                 num_prompt_tokens = req_state.num_prompt_tokens
-                num_scheduled_tokens = scheduler_output.num_scheduled_tokens[req_id]
+                num_scheduled_tokens = scheduler_output.num_scheduled_tokens[
+                    req_id]
                 full_prefill_mask.append(
-                    req_state.num_computed_tokens < num_prompt_tokens 
-                    and req_state.num_computed_tokens+num_scheduled_tokens >= num_prompt_tokens)
+                    req_state.num_computed_tokens < num_prompt_tokens
+                    and req_state.num_computed_tokens + num_scheduled_tokens
+                    >= num_prompt_tokens)
                 if token_ids:
                     # Common case.
                     next_token_id = token_ids[-1]
@@ -1705,14 +1714,16 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                                scheduler_output.num_scheduled_tokens[req_id])
                     next_token_id = req_state.get_token_id(seq_len)
                     last_hidden_index = cu_num_tokens[i + 1] - 1
+                    # For non-shifting prefill + partial prefill case,
+                    # the current round last hidden state will be used
+                    # as the first prefill hidden for the next round
                     req_state.prefill_hidden_states = target_hidden_states[
                         last_hidden_index]
                 next_token_ids.append(next_token_id)
             next_token_ids = torch.tensor(next_token_ids,
                                           dtype=torch.int32,
                                           device=self.device)
-            prefill_first_hiddens = torch.cat(prefill_first_hiddens,
-                                              dim=0)
+            prefill_first_hiddens = torch.cat(prefill_first_hiddens, dim=0)
             full_prefill_mask = torch.tensor(full_prefill_mask,
                                              dtype=torch.bool,
                                              device=self.device)
