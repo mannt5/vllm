@@ -12,6 +12,7 @@ from vllm.model_executor.model_loader.bitsandbytes_loader import (
 from vllm.model_executor.model_loader.default_loader import DefaultModelLoader
 from vllm.model_executor.model_loader.dummy_loader import DummyModelLoader
 from vllm.model_executor.model_loader.gguf_loader import GGUFModelLoader
+from vllm.model_executor.model_loader.remote_loader import RemoteModelLoader
 from vllm.model_executor.model_loader.runai_streamer_loader import (
     RunaiModelStreamerLoader)
 from vllm.model_executor.model_loader.sharded_state_loader import (
@@ -46,6 +47,9 @@ def get_model_loader(load_config: LoadConfig) -> BaseModelLoader:
 
     if load_config.load_format == LoadFormat.RUNAI_STREAMER_SHARDED:
         return ShardedStateLoader(load_config, runai_model_streamer=True)
+
+    if load_config.load_format == LoadFormat.REMOTE:
+        return RemoteModelLoader(load_config)
 
     return DefaultModelLoader(load_config)
 
