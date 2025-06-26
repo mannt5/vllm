@@ -1,11 +1,18 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import json
+from functools import lru_cache
+from pathlib import Path
 from typing import Optional
 
 import torch
 
+from vllm.logger import init_logger
+from vllm.platforms import current_platform
 from vllm.triton_utils import tl, triton
+
+logger = init_logger(__name__)
 
 
 def is_weak_contiguous(x: torch.Tensor):
@@ -121,18 +128,62 @@ def scaled_mm_kernel(a_ptr, b_ptr, scale_a_ptr, scale_b_ptr, c_ptr, bias_ptr,
     tl.store(c_ptrs, c, mask=c_mask)
 
 
-# input   - [M, K]
+@lru_cache
+def _load_configs(N: int, K: int, dtype: str):
+    # lookup pre-tuned config
+    device_name = current_platform.get_device_name().replace(" ", "_")
+    json_filename = f"N={N},K={K},device_name={device_name},dtype={dtype}_w8a8.json"  # noqa: E501
+    config_filepath = Path(__file__).parent / "triton_configs" / json_filename
+
+    if not config_filepath.exists():
+        logger.warning(
+            "Using default W8A8 kernel config. Performance might "
+            "be sub-optimal! Config file not found at %s", config_filepath)
+        return None
+
+    logger.info("Using configuration from %s for W8A8 Block FP8 kernel.",
+                config_filepath)
+    with open(config_filepath) as f:
+        # return sorted key-value pair
+        return sorted((int(k), v) for k, v in json.load(f).items())
+
+
+def _select_config(M: int, N: int, K: int):
+    # for small M, use pre-defined config.
+    # it's bandwidth-bound, so tuned config is unnecessary
+    if M <= 16:
+        return dict(BLOCK_SIZE_M=16, BLOCK_SIZE_N=64, BLOCK_SIZE_K=256)
+    if M <= 32:
+        return dict(BLOCK_SIZE_M=32, BLOCK_SIZE_N=64, BLOCK_SIZE_K=256)
+
+    configs = _load_configs(N, K)
+
+    # no tuned config found. use heuristics
+    if configs is None:
+        if M <= 128:
+            return dict(BLOCK_SIZE_M=64, BLOCK_SIZE_N=128, BLOCK_SIZE_K=128)
+
+        else:
+            return dict(BLOCK_SIZE_M=128, BLOCK_SIZE_N=128, BLOCK_SIZE_K=128)
+
+    # smallest key that is >= M
+    for k, v in configs:
+        if k >= M:
+            return v
+
+    # otherwise, use the last config (largest key)
+    _, v = configs[-1]
+    return v
+
+
+# input  - [M, K]
 # weight - [K, N]
 def triton_scaled_mm(input: torch.Tensor,
                      weight: torch.Tensor,
                      scale_a: torch.Tensor,
                      scale_b: torch.Tensor,
                      out_dtype: type[torch.dtype],
-                     bias: Optional[torch.Tensor] = None,
-                     block_size_m: int = 32,
-                     block_size_n: int = 32,
-                     block_size_k: int = 32,
-                     use_heuristic=True) -> torch.Tensor:
+                     bias: Optional[torch.Tensor] = None) -> torch.Tensor:
     M, K = input.shape
     N = weight.shape[1]
 
@@ -158,24 +209,9 @@ def triton_scaled_mm(input: torch.Tensor,
 
     result = torch.empty((M, N), dtype=out_dtype, device=input.device)
 
-    has_scalar = lambda x: x.shape[0] == 1 and x.shape[1] == 1
-
-    if use_heuristic:
-        is_small_N = N < 8192
-        next_power_of_2_M = max(32, triton.next_power_of_2(M))
-        if next_power_of_2_M <= 32:
-            tile_shape = (64, 64, 256) if is_small_N else (64, 128, 256)
-        elif next_power_of_2_M <= 64:
-            tile_shape = (64, 64, 256)
-        elif next_power_of_2_M <= 128:
-            tile_shape = (64, 128, 128)
-        else:
-            tile_shape = (128, 128, 128)
-
-    block_size_m, block_size_n, block_size_k = tile_shape
-
-    block_size_sa = 1 if has_scalar(scale_a) else block_size_m
-    block_size_sb = 1 if has_scalar(scale_b) else block_size_n
+    config = _select_config(M, N, K)
+    block_size_sa = 1 if scale_a.numel() == 1 else config["BLOCK_SIZE_M"]
+    block_size_sb = 1 if scale_b.numel() == 1 else config["BLOCK_SIZE_N"]
 
     accumulator_dtype = tl.float32 if input.is_floating_point() else tl.int32
 
@@ -197,10 +233,8 @@ def triton_scaled_mm(input: torch.Tensor,
                            result.stride(0),
                            result.stride(1),
                            accumulator_dtype,
-                           BLOCK_SIZE_M=block_size_m,
-                           BLOCK_SIZE_N=block_size_n,
-                           BLOCK_SIZE_K=block_size_k,
                            BLOCK_SIZE_SCALE_A=block_size_sa,
-                           BLOCK_SIZE_SCALE_B=block_size_sb)
+                           BLOCK_SIZE_SCALE_B=block_size_sb,
+                           **config)
 
     return result.to(out_dtype)
