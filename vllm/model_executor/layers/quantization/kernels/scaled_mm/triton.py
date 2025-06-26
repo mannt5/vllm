@@ -65,8 +65,8 @@ def _triton_scaled_mm_kernel(
     A_ptr,
     B_ptr,
     C_ptr,
-    A_scale_ptr,
-    B_scale_ptr,
+    As_ptr,
+    Bs_ptr,
     M,
     N,
     K,
@@ -118,9 +118,9 @@ def _triton_scaled_mm_kernel(
     idx_n = rn[None, :]
     mask = (idx_m < M) & (idx_n < N)
 
-    row_scale = tl.load(A_scale_ptr + idx_m, mask=idx_m < M).to(tl.float32)
-    col_scale = tl.load(B_scale_ptr + idx_n, mask=idx_n < N).to(tl.float32)
-    acc = acc.to(tl.float32) * row_scale * col_scale
+    As = tl.load(As_ptr + idx_m, mask=idx_m < M).to(tl.float32)
+    Bs = tl.load(Bs_ptr + idx_n, mask=idx_n < N).to(tl.float32)
+    acc = acc.to(tl.float32) * As * Bs
 
     xindex = idx_m * stride_cm + idx_n * stride_cn
     tl.store(C_ptr + tl.broadcast_to(xindex, mask.shape), acc, mask)
@@ -131,7 +131,7 @@ def _load_configs(N: int, K: int):
     # lookup pre-tuned config
     device_name = current_platform.get_device_name().replace(" ", "_")
     json_filename = f"N={N},K={K},device_name={device_name},dtype=int8_w8a8.json"  # noqa: E501
-    config_filepath = Path(__file__).parent / "configs" / json_filename
+    config_filepath = Path(__file__).parent / "triton_configs" / json_filename
 
     if not config_filepath.exists():
         logger.warning(
@@ -185,23 +185,30 @@ def _select_config(M: int, N: int, K: int):
     return v
 
 
-def triton_scaled_mm(A: torch.Tensor, B: torch.Tensor, scale_A: torch.Tensor,
-                     scale_B: torch.Tensor,
-                     out_dtype: torch.dtype) -> torch.Tensor:
-    assert (A.dtype == B.dtype == torch.int8)
+def triton_scaled_mm(A: torch.Tensor, B: torch.Tensor, As: torch.Tensor,
+                     Bs: torch.Tensor,
+                     output_dtype: torch.dtype) -> torch.Tensor:
+    assert A.dtype == torch.int8 and A.is_contiguous()
+    assert B.dtype == torch.int8 and B.T.is_contiguous()
+    assert A.shape[1] == B.shape[0]
+    assert As.is_contiguous()
+    assert Bs.is_contiguous()
+
     M, K = A.shape
     _, N = B.shape
-
-    C = torch.empty(M, N, device=A.device, dtype=out_dtype)
-    grid = lambda META: (triton.cdiv(M, META["BLOCK_M"]) * triton.cdiv(
-        N, META["BLOCK_N"]), )
+    C = torch.empty(M, N, device=A.device, dtype=output_dtype)
     config = _select_config(M, N, K)
+
+    def grid(META):
+        return (triton.cdiv(M, META["BLOCK_M"]) *
+                triton.cdiv(N, META["BLOCK_N"]), )
+
     _triton_scaled_mm_kernel[grid](
         A,
         B,
         C,
-        scale_A,
-        scale_B,
+        As,
+        Bs,
         M,
         N,
         K,
