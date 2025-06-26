@@ -162,7 +162,6 @@ def _select_config(M: int, N: int, K: int, dtype: str):
     if configs is None:
         if M <= 128:
             return dict(BLOCK_SIZE_M=64, BLOCK_SIZE_N=128, BLOCK_SIZE_K=128)
-
         else:
             return dict(BLOCK_SIZE_M=128, BLOCK_SIZE_N=128, BLOCK_SIZE_K=128)
 

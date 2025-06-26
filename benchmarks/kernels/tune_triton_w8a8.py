@@ -38,7 +38,9 @@ def w8a8_matmul(
     C = torch.empty(M, N, device=A.device, dtype=output_dtype)
 
     def grid(META):
-        return (triton.cdiv(M, META["BLOCK_M"]) * triton.cdiv(N, META["BLOCK_N"]),)
+        return (
+            triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"]),
+        )
 
     scaled_mm_kernel[grid](
         A,
@@ -242,7 +244,10 @@ def main(args):
     torch.cuda.init()
 
     if args.batch_size is None:
+        # M <= 32 will be selected based on heuristic. don't need to tune.
         batch_sizes = [
+            48,
+            64,
             96,
             128,
             256,
