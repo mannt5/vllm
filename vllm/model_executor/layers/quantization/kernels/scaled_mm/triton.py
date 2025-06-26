@@ -80,9 +80,8 @@ def _triton_scaled_mm_kernel(
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
+    GROUP_M: tl.constexpr = 8,
 ):
-    GROUP_M: tl.constexpr = 8
-
     # based on triton.ops.matmul
     pid = tl.program_id(0)
     grid_m = (M + BLOCK_M - 1) // BLOCK_M

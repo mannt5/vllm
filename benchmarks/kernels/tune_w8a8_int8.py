@@ -124,7 +124,7 @@ def tune(M, N, K, out_dtype, search_space, input_type):
     factor_for_scale = 1e-2
 
     A = torch.randint(-128, 127, size=(M, K), dtype=torch.int8, device="cuda")
-    B = torch.randint(-128, 127, size=(N, K), dtype=torch.int8, device="cuda")
+    B = torch.randint(-128, 127, size=(N, K), dtype=torch.int8, device="cuda").T
 
     As = torch.rand(M, 1, dtype=torch.float32, device="cuda") * factor_for_scale
     Bs = torch.rand(1, N, dtype=torch.float32, device="cuda") * factor_for_scale
@@ -275,7 +275,7 @@ if __name__ == "__main__":
     parser = FlexibleArgumentParser(
         description="""
 Tune triton w8a8 int8:
-    python3 benchmark_w8a8_int8.py
+    python3 tune_w8a8_int8.py
 Then copy to model_executor/layers/quantization/kernels/scaled_mm/triton_configs
         """,
         formatter_class=argparse.RawTextHelpFormatter,
