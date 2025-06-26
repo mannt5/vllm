@@ -13,8 +13,8 @@ from typing import Any
 import torch
 from tqdm import tqdm
 
-from vllm.model_executor.layers.quantization.kernels.scaled_mm.triton import (
-    _triton_scaled_mm_kernel,
+from vllm.model_executor.layers.quantization.compressed_tensors.triton_scaled_mm import (  # noqa: E501
+    scaled_mm_kernel,
 )
 from vllm.platforms import current_platform
 from vllm.triton_utils import tl, triton
@@ -31,14 +31,8 @@ def w8a8_matmul(
     As: torch.Tensor,
     Bs: torch.Tensor,
     config: dict[str, Any],
-    output_dtype: torch.dtype = torch.float16,
+    output_dtype: torch.dtype = torch.bfloat16,
 ) -> torch.Tensor:
-    assert A.dtype == torch.int8 and A.is_contiguous()
-    assert B.dtype == torch.int8 and B.T.is_contiguous()
-    assert A.shape[1] == B.shape[0]
-    assert As.is_contiguous()
-    assert Bs.is_contiguous()
-
     M, K = A.shape
     _, N = B.shape
     C = torch.empty(M, N, device=A.device, dtype=output_dtype)
@@ -46,19 +40,22 @@ def w8a8_matmul(
     def grid(META):
         return (triton.cdiv(M, META["BLOCK_M"]) * triton.cdiv(N, META["BLOCK_N"]),)
 
-    _triton_scaled_mm_kernel[grid](
+    scaled_mm_kernel[grid](
         A,
         B,
-        C,
         As,
         Bs,
+        C,
+        None,
         M,
         N,
         K,
         *A.stride(),
         *B.stride(),
         *C.stride(),
-        ACC_DTYPE=tl.int32,
+        ACCUMULATOR_DTYPE=tl.float32 if A.is_floating_point() else tl.int32,
+        BLOCK_SIZE_SCALE_A=config["BLOCK_SIZE_M"],
+        BLOCK_SIZE_SCALE_B=config["BLOCK_SIZE_N"],
         **config,
     )
     return C
@@ -67,17 +64,17 @@ def w8a8_matmul(
 def get_configs_compute_bound():
     configs = [
         {
-            "BLOCK_M": block_m,
-            "BLOCK_N": block_n,
-            "BLOCK_K": block_k,
-            "GROUP_M": group_m,
+            "BLOCK_SIZE_M": block_m,
+            "BLOCK_SIZE_N": block_n,
+            "BLOCK_SIZE_K": block_k,
+            # "GROUP_M": group_m,
             "num_warps": num_warps,
             "num_stages": num_stages,
         }
         for block_m in [32, 64, 128, 256]
         for block_n in [32, 64, 128, 256]
-        for block_k in [64, 128]
-        for group_m in [1, 8]
+        for block_k in [64, 128, 256]
+        # for group_m in [1, 8]
         for num_warps in [4, 8]
         for num_stages in [3, 4, 5]
     ]
@@ -123,11 +120,22 @@ def benchmark_config(A, B, As, Bs, config, out_dtype=torch.bfloat16, num_iters=1
 def tune(M, N, K, out_dtype, search_space, input_type):
     factor_for_scale = 1e-2
 
-    A = torch.randint(-128, 127, size=(M, K), dtype=torch.int8, device="cuda")
-    B = torch.randint(-128, 127, size=(N, K), dtype=torch.int8, device="cuda").T
+    if input_type == "int8":
+        A = torch.randint(-128, 127, size=(M, K), dtype=torch.int8, device="cuda")
+        B = torch.randint(-128, 127, size=(N, K), dtype=torch.int8, device="cuda").T
+
+    elif input_type == "fp8":
+        dtype = torch.float8_e4m3fn
+        fp8_max = torch.finfo(dtype).max
+
+        A = (torch.rand(M, K, dtype=torch.float32, device="cuda") * 2 - 1) * fp8_max
+        B = (torch.rand(N, K, dtype=torch.float32, device="cuda") * 2 - 1) * fp8_max
+
+        A = A.clip(-fp8_max, fp8_max).to(dtype)
+        B = B.clip(-fp8_max, fp8_max).to(dtype).T
 
     As = torch.rand(M, 1, dtype=torch.float32, device="cuda") * factor_for_scale
-    Bs = torch.rand(1, N, dtype=torch.float32, device="cuda") * factor_for_scale
+    Bs = torch.rand(N, 1, dtype=torch.float32, device="cuda") * factor_for_scale
 
     best_config = None
     best_time = float("inf")
@@ -274,14 +282,16 @@ def main(args):
 if __name__ == "__main__":
     parser = FlexibleArgumentParser(
         description="""
-Tune triton w8a8 int8:
-    python3 tune_w8a8_int8.py
-Then copy to model_executor/layers/quantization/kernels/scaled_mm/triton_configs
+Tune triton w8a8:
+    python3 tune_triton_w8a8.py
+Then copy to model_executor/layers/quantization/compressed_tensors/triton_configs
         """,
         formatter_class=argparse.RawTextHelpFormatter,
     )
 
-    parser.add_argument("--input-type", type=str, choices=["int8"], default="int8")
+    parser.add_argument(
+        "--input-type", type=str, choices=["int8", "fp8"], default="int8"
+    )
     parser.add_argument("--batch-size", type=int, required=False)
     parser.add_argument("--save-path", type=str, default="./")
     args = parser.parse_args()

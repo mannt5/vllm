@@ -148,7 +148,7 @@ def _load_configs(N: int, K: int, dtype: str):
         return sorted((int(k), v) for k, v in json.load(f).items())
 
 
-def _select_config(M: int, N: int, K: int):
+def _select_config(M: int, N: int, K: int, dtype: str):
     # for small M, use pre-defined config.
     # it's bandwidth-bound, so tuned config is unnecessary
     if M <= 16:
@@ -156,7 +156,7 @@ def _select_config(M: int, N: int, K: int):
     if M <= 32:
         return dict(BLOCK_SIZE_M=32, BLOCK_SIZE_N=64, BLOCK_SIZE_K=256)
 
-    configs = _load_configs(N, K)
+    configs = _load_configs(N, K, dtype)
 
     # no tuned config found. use heuristics
     if configs is None:
@@ -209,11 +209,15 @@ def triton_scaled_mm(input: torch.Tensor,
 
     result = torch.empty((M, N), dtype=out_dtype, device=input.device)
 
-    config = _select_config(M, N, K)
+    if input.is_floating_point():
+        config = _select_config(M, N, K, "fp8")
+        accumulator_dtype = tl.float32
+    else:
+        config = _select_config(M, N, K, "int8")
+        accumulator_dtype = tl.int32
+
     block_size_sa = 1 if scale_a.numel() == 1 else config["BLOCK_SIZE_M"]
     block_size_sb = 1 if scale_b.numel() == 1 else config["BLOCK_SIZE_N"]
-
-    accumulator_dtype = tl.float32 if input.is_floating_point() else tl.int32
 
     # A = input, B = weight, C = result
     # A = M x K, B = K x N, C = M x N
