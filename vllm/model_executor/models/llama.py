@@ -114,6 +114,7 @@ class LlamaAttention(nn.Module):
         cache_config: Optional[CacheConfig] = None,
         prefix: str = "",
         attn_type: str = AttentionType.DECODER,
+        is_draft: bool = False,
     ) -> None:
         super().__init__()
         layer_idx = extract_layer_index(prefix)
@@ -191,6 +192,7 @@ class LlamaAttention(nn.Module):
             per_layer_sliding_window=sliding_window,
             attn_type=attn_type,
             prefix=f"{prefix}.attn",
+            is_draft=is_draft,
         )
 
     def forward(
@@ -232,6 +234,7 @@ class LlamaDecoderLayer(nn.Module):
         cache_config: Optional[CacheConfig] = None,
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
+        is_draft: bool = False,
     ) -> None:
         super().__init__()
         self.hidden_size = config.hidden_size
@@ -276,6 +279,7 @@ class LlamaDecoderLayer(nn.Module):
             cache_config=cache_config,
             prefix=f"{prefix}.self_attn",
             attn_type=attn_type,
+            is_draft=is_draft,
         )
         self.mlp = LlamaMLP(
             hidden_size=self.hidden_size,
