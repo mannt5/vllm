@@ -11,6 +11,7 @@ import torch
 from vllm.logger import init_logger
 from vllm.platforms import current_platform
 from vllm.triton_utils import tl, triton
+from vllm.utils import direct_register_custom_op
 
 logger = init_logger(__name__)
 
@@ -193,7 +194,7 @@ def triton_scaled_mm(input: torch.Tensor,
                      weight: torch.Tensor,
                      scale_a: torch.Tensor,
                      scale_b: torch.Tensor,
-                     out_dtype: type[torch.dtype],
+                     out_dtype: torch.dtype,
                      bias: Optional[torch.Tensor] = None) -> torch.Tensor:
     M, K = input.shape
     N = weight.shape[1]
@@ -253,3 +254,22 @@ def triton_scaled_mm(input: torch.Tensor,
                            **config)
 
     return result.to(out_dtype)
+
+
+def triton_scaled_mm_fake(input: torch.Tensor,
+                          weight: torch.Tensor,
+                          scale_a: torch.Tensor,
+                          scale_b: torch.Tensor,
+                          out_dtype: torch.dtype,
+                          bias: Optional[torch.Tensor] = None) -> torch.Tensor:
+    M = input.shape[0]
+    N = weight.shape[1]
+    return torch.empty((M, N), dtype=out_dtype, device=input.device)
+
+
+direct_register_custom_op(
+    op_name="triton_scaled_mm",
+    op_func=triton_scaled_mm,
+    mutates_args=[],
+    fake_impl=triton_scaled_mm_fake,
+)

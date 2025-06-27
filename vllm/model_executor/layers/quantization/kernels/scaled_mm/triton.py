@@ -7,8 +7,6 @@ import torch
 
 from vllm import _custom_ops as ops
 from vllm.logger import init_logger
-from vllm.model_executor.layers.quantization.compressed_tensors.triton_scaled_mm import (
-    triton_scaled_mm)
 from vllm.platforms import current_platform
 
 from .cutlass import CutlassScaledMMLinearKernel
@@ -54,4 +52,5 @@ class TritonScaledMMLinearKernel(CutlassScaledMMLinearKernel):
                                             i_zp,
                                             symmetric=True)
 
-        return triton_scaled_mm(x_q, w_q, x_s, w_s, x.dtype, bias)
+        return torch.ops.vllm.triton_scaled_mm(x_q, w_q, x_s, w_s, x.dtype,
+                                               bias)
