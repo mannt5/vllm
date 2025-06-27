@@ -10,6 +10,7 @@ import multiprocessing as mp
 import os
 import time
 from datetime import datetime
+from functools import partial
 from typing import Any
 
 import torch
@@ -120,10 +121,7 @@ def tune(M, N, K, out_dtype, search_space, input_type):
     best_time = float("inf")
     for config in tqdm(search_space):
         try:
-
-            def run():
-                w8a8_matmul(A, B, As, Bs, config, out_dtype)
-
+            run = partial(w8a8_matmul, A, B, As, Bs, config, out_dtype)
             kernel_time = triton.testing.do_bench(run, warmup=5, rep=20)
 
         except triton.runtime.autotuner.OutOfResources:
@@ -254,8 +252,12 @@ def main(args):
         with ctx.Pool(num_gpus) as pool:
             best_configs_list = pool.map(tune_on_gpu, process_args)
 
+        # flatten the list
+        best_configs = [config for configs in best_configs_list for config in configs]
+
         # merge configs from all GPU. sort by M
-        best_configs = dict(sorted(sum(best_configs_list, start=[])))
+        best_configs = dict(sorted(best_configs))
+
         N, K = weight_shape
         save_configs(N, K, best_configs, args.save_path, args.input_type)
 
