@@ -154,7 +154,7 @@ def _load_configs(N: int, K: int, dtype: str):
             "be sub-optimal! Config file not found at %s", config_filepath)
         return None
 
-    logger.info("Using configuration from %s for W8A8 Block FP8 kernel.",
+    logger.info("Using configuration from %s for W8A8 kernel.",
                 config_filepath)
     with open(config_filepath) as f:
         # return sorted key-value pair
