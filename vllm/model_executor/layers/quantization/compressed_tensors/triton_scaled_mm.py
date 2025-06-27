@@ -24,19 +24,37 @@ def is_weak_contiguous(x: torch.Tensor):
 
 
 @triton.jit
-def scaled_mm_kernel(a_ptr, b_ptr, scale_a_ptr, scale_b_ptr, c_ptr, bias_ptr,
-                     M, N, K, stride_am, stride_ak, stride_bk, stride_bn,
-                     stride_cm, stride_cn, ACCUMULATOR_DTYPE: tl.constexpr,
-                     BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr,
+def scaled_mm_kernel(a_ptr,
+                     b_ptr,
+                     scale_a_ptr,
+                     scale_b_ptr,
+                     c_ptr,
+                     bias_ptr,
+                     M,
+                     N,
+                     K,
+                     stride_am,
+                     stride_ak,
+                     stride_bk,
+                     stride_bn,
+                     stride_cm,
+                     stride_cn,
+                     ACCUMULATOR_DTYPE: tl.constexpr,
+                     BLOCK_SIZE_M: tl.constexpr,
+                     BLOCK_SIZE_N: tl.constexpr,
                      BLOCK_SIZE_K: tl.constexpr,
-                     BLOCK_SIZE_SCALE_A: tl.constexpr,
-                     BLOCK_SIZE_SCALE_B: tl.constexpr):
+                     SCALE_A_TENSOR: tl.constexpr,
+                     SCALE_B_TENSOR: tl.constexpr,
+                     GROUP_SIZE_M: tl.constexpr = 8):
     pid = tl.program_id(axis=0)
 
+    num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
 
     pid_m = pid // num_pid_n
     pid_n = pid % num_pid_n
+    pid_m, pid_n = tl.swizzle2d(pid_m, pid_n, num_pid_m, num_pid_n,
+                                GROUP_SIZE_M)
 
     accumulator_dtype = ACCUMULATOR_DTYPE
     accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N),
@@ -48,10 +66,10 @@ def scaled_mm_kernel(a_ptr, b_ptr, scale_a_ptr, scale_b_ptr, c_ptr, bias_ptr,
 
     # Offsets and masks.
     offsets_am = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M).to(tl.int64)
-    masks_am = offsets_am < M
+    offsets_am = offsets_am % M
 
     offsets_bn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N).to(tl.int64)
-    masks_bn = offsets_bn < N
+    offsets_bn = offsets_bn % N
 
     offsets_k = tl.arange(0, BLOCK_SIZE_K).to(tl.int64)
     offsets_a = (stride_am * offsets_am[:, None] +
@@ -59,51 +77,45 @@ def scaled_mm_kernel(a_ptr, b_ptr, scale_a_ptr, scale_b_ptr, c_ptr, bias_ptr,
     offsets_b = (stride_bk * offsets_k[:, None] +
                  stride_bn * offsets_bn[None, :])
 
-    # NOTE: BLOCK_SIZE_SCALE_A could be 1 or BLOCK_SIZE_M, so need to create
-    # appropriate offsets and masks for each case. Same goes for
-    # BLOCK_SIZE_SCALE_B.
-    offsets_scale_am = (tl.arange(0, BLOCK_SIZE_SCALE_A) +
-                        (BLOCK_SIZE_SCALE_A > 1) * pid_m * BLOCK_SIZE_M)
-    masks_scale_am = offsets_scale_am < M
-
-    offsets_scale_bn = (tl.arange(0, BLOCK_SIZE_SCALE_B) +
-                        (BLOCK_SIZE_SCALE_B > 1) * pid_n * BLOCK_SIZE_N)
-    masks_scale_bn = offsets_scale_bn < N
-
     a_ptrs = a_ptr + offsets_a
     b_ptrs = b_ptr + offsets_b
 
-    scale_a_ptrs = scale_a_ptr + offsets_scale_am
-    scale_b_ptrs = scale_b_ptr + offsets_scale_bn
-
-    for k in range(0, tl.cdiv(K, BLOCK_SIZE_K)):
-        masks_k = offsets_k < K
-        masks_a = masks_am[:, None] & masks_k[None, :]
-        a = tl.load(a_ptrs, mask=masks_a)
-
-        masks_b = masks_k[:, None] & masks_bn[None, :]
-        b = tl.load(b_ptrs, mask=masks_b)
+    for k in range(K, 0, -BLOCK_SIZE_K):
+        masks_k = offsets_k < k
+        a = tl.load(a_ptrs, mask=masks_k[None, :])
+        b = tl.load(b_ptrs, mask=masks_k[:, None])
 
         # Accumulate results.
         accumulator = tl.dot(a, b, accumulator, out_dtype=accumulator_dtype)
 
-        offsets_k += BLOCK_SIZE_K
         a_ptrs += BLOCK_SIZE_K * stride_ak
         b_ptrs += BLOCK_SIZE_K * stride_bk
 
+    # NOTE: BLOCK_SIZE_SCALE_A could be 1 or BLOCK_SIZE_M, so need to create
+    # appropriate offsets and masks for each case. Same goes for
+    # BLOCK_SIZE_SCALE_B.
+    if SCALE_A_TENSOR:
+        scale_a = tl.load(scale_a_ptr)
+    else:
+        offsets_scale_am = tl.arange(
+            0, BLOCK_SIZE_M)[:, None] + pid_m * BLOCK_SIZE_M
+        scale_a_ptrs = scale_a_ptr + offsets_scale_am
+        scale_a = tl.load(scale_a_ptrs, offsets_scale_am < M)
+
     # Apply scale at end.
-    masks_scale_a = masks_scale_am[:, None] & (tl.arange(0, 1) < 1)[:, None]
-    scale_a = tl.load(scale_a_ptrs[:, None], masks_scale_a)
     # Need to broadcast to the appropriate size, if scale_a is already
     # (BLOCK_SIZE_M, 1) then it will broadcast to its own shape. Same goes
     # for scale_b below.
-    scale_a = scale_a.broadcast_to((BLOCK_SIZE_M, 1))
     accumulator = scale_a * accumulator.to(tl.float32)
 
-    masks_scale_b = masks_scale_bn[:, None] & (tl.arange(0, 1) < 1)[None, :]
-    scale_b = tl.load(scale_b_ptrs[:, None], masks_scale_b)
-    scale_b = scale_b.broadcast_to((BLOCK_SIZE_N, 1))
-    accumulator = scale_b.T * accumulator.to(tl.float32)
+    if SCALE_B_TENSOR:
+        scale_b = tl.load(scale_b_ptr)
+    else:
+        offsets_scale_bn = tl.arange(
+            0, BLOCK_SIZE_N)[None, :] + pid_n * BLOCK_SIZE_N
+        scale_b_ptrs = scale_b_ptr + offsets_scale_bn
+        scale_b = tl.load(scale_b_ptrs, offsets_scale_bn < N)
+    accumulator = accumulator.to(tl.float32) * scale_b
 
     # Convert to output format.
     c = accumulator.to(c_ptr.type.element_ty)
@@ -215,8 +227,8 @@ def triton_scaled_mm(input: torch.Tensor,
         config = _select_config(M, N, K, "int8")
         accumulator_dtype = tl.int32
 
-    block_size_sa = 1 if scale_a.numel() == 1 else config["BLOCK_SIZE_M"]
-    block_size_sb = 1 if scale_b.numel() == 1 else config["BLOCK_SIZE_N"]
+    scale_a_tensor = scale_a.numel() == 1
+    scale_b_tensor = scale_b.numel() == 1
 
     # A = input, B = weight, C = result
     # A = M x K, B = K x N, C = M x N
@@ -236,8 +248,8 @@ def triton_scaled_mm(input: torch.Tensor,
                            result.stride(0),
                            result.stride(1),
                            accumulator_dtype,
-                           BLOCK_SIZE_SCALE_A=block_size_sa,
-                           BLOCK_SIZE_SCALE_B=block_size_sb,
+                           SCALE_A_TENSOR=scale_a_tensor,
+                           SCALE_B_TENSOR=scale_b_tensor,
                            **config)
 
     return result.to(out_dtype)

@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 # Adapted from benchmark_w8a8_block_fp8.py
+# NOTE: we only tune for channel-wise + per-token quantization, and assume
+# the tuned config is also applicable for tensor-wise scaling.
 
 import argparse
 import json
@@ -56,8 +58,8 @@ def w8a8_matmul(
         *B.stride(),
         *C.stride(),
         ACCUMULATOR_DTYPE=tl.float32 if A.is_floating_point() else tl.int32,
-        BLOCK_SIZE_SCALE_A=config["BLOCK_SIZE_M"],
-        BLOCK_SIZE_SCALE_B=config["BLOCK_SIZE_N"],
+        SCALE_A_TENSOR=False,
+        SCALE_B_TENSOR=False,
         **config,
     )
     return C
@@ -69,14 +71,14 @@ def get_configs_compute_bound():
             "BLOCK_SIZE_M": block_m,
             "BLOCK_SIZE_N": block_n,
             "BLOCK_SIZE_K": block_k,
-            # "GROUP_M": group_m,
+            "GROUP_SIZE_M": group_m,
             "num_warps": num_warps,
             "num_stages": num_stages,
         }
         for block_m in [32, 64, 128, 256]
         for block_n in [32, 64, 128, 256]
         for block_k in [64, 128, 256]
-        # for group_m in [1, 8]
+        for group_m in [1, 4, 8, 16]
         for num_warps in [4, 8]
         for num_stages in [3, 4, 5]
     ]
@@ -92,31 +94,6 @@ def get_weight_shapes():
         (2560, 9728),
     ]
     return weight_shapes
-
-
-def benchmark_config(A, B, As, Bs, config, out_dtype=torch.bfloat16, num_iters=10):
-    def run():
-        w8a8_matmul(A, B, As, Bs, config, out_dtype)
-
-    torch.cuda.synchronize()
-    # JIT complication & warmup
-    for _ in range(5):
-        run()
-    torch.cuda.synchronize()
-
-    start_event = torch.cuda.Event(enable_timing=True)
-    end_event = torch.cuda.Event(enable_timing=True)
-
-    latencies: list[float] = []
-    for i in range(num_iters):
-        torch.cuda.synchronize()
-        start_event.record()
-        run()
-        end_event.record()
-        end_event.synchronize()
-        latencies.append(start_event.elapsed_time(end_event))
-    avg = sum(latencies) / (num_iters * 10) * 1000  # us
-    return avg
 
 
 def tune(M, N, K, out_dtype, search_space, input_type):
@@ -143,15 +120,12 @@ def tune(M, N, K, out_dtype, search_space, input_type):
     best_time = float("inf")
     for config in tqdm(search_space):
         try:
-            kernel_time = benchmark_config(
-                A,
-                B,
-                As,
-                Bs,
-                config,
-                out_dtype,
-                num_iters=10,
-            )
+
+            def run():
+                w8a8_matmul(A, B, As, Bs, config, out_dtype)
+
+            kernel_time = triton.testing.do_bench(run, warmup=5, rep=20)
+
         except triton.runtime.autotuner.OutOfResources:
             # Some configurations may be invalid and fail to compile.
             continue
@@ -159,6 +133,7 @@ def tune(M, N, K, out_dtype, search_space, input_type):
         if kernel_time < best_time:
             best_time = kernel_time
             best_config = config
+
     now = datetime.now()
     print(f"{now.ctime()}] Completed tuning for batch_size={M}")
     assert best_config is not None
@@ -170,7 +145,7 @@ def save_configs(
     K,
     configs,
     save_path,
-    input_type="int8",
+    input_type,
 ) -> None:
     os.makedirs(save_path, exist_ok=True)
     device_name = current_platform.get_device_name().replace(" ", "_")
@@ -190,47 +165,46 @@ def tune_on_gpu(args_dict):
     """Run tuning on a specific GPU."""
     gpu_id = args_dict["gpu_id"]
     batch_sizes = args_dict["batch_sizes"]
-    weight_shapes = args_dict["weight_shapes"]
+    weight_shape = args_dict["weight_shape"]
     args = args_dict["args"]
 
     torch.cuda.set_device(gpu_id)
     print(f"Starting tuning on GPU {gpu_id} with batch sizes {batch_sizes}")
 
     out_dtype = torch.bfloat16
-    save_path = args.save_path
     input_type = args.input_type
 
     search_space = get_configs_compute_bound()
 
     start = time.time()
-    for shape in tqdm(weight_shapes, desc=f"GPU {gpu_id} - Shapes"):
-        N, K = shape[0], shape[1]
-        print(f"[GPU {gpu_id}] Tune for weight shape of `N: {N}, K: {K}`")
-        benchmark_results = [
-            tune(
-                batch_size,
-                N,
-                K,
-                out_dtype,
-                search_space,
-                input_type,
-            )
-            for batch_size in tqdm(batch_sizes, desc=f"GPU {gpu_id} - Batch sizes")
-        ]
-        best_configs = {M: config for M, config in zip(batch_sizes, benchmark_results)}
-        save_configs(N, K, best_configs, save_path, input_type)
+    N, K = weight_shape
+    print(f"[GPU {gpu_id}] Tune for weight shape of `N: {N}, K: {K}`")
+    benchmark_results = [
+        tune(
+            batch_size,
+            N,
+            K,
+            out_dtype,
+            search_space,
+            input_type,
+        )
+        for batch_size in tqdm(batch_sizes, desc=f"GPU {gpu_id} - Batch sizes")
+    ]
+    best_configs = list(zip(batch_sizes, benchmark_results))
 
     end = time.time()
     print(f"Tuning on GPU {gpu_id} took {end - start:.2f} seconds")
+    return best_configs
 
 
 def distribute_batch_sizes(batch_sizes, num_gpus):
     """Distribute batch sizes across available GPUs."""
-    batches_per_gpu = []
-    for i in range(num_gpus):
-        start_idx = i * len(batch_sizes) // num_gpus
-        end_idx = (i + 1) * len(batch_sizes) // num_gpus
-        batches_per_gpu.append(batch_sizes[start_idx:end_idx])
+    batches_per_gpu = [[] for _ in range(num_gpus)]
+
+    # round-robin
+    for i, batch_size in enumerate(batch_sizes):
+        batches_per_gpu[i % num_gpus].append(batch_size)
+
     return batches_per_gpu
 
 
@@ -263,23 +237,27 @@ def main(args):
         num_gpus = 1  # If only one batch size, use only one GPU
 
     weight_shapes = get_weight_shapes()
-
     batches_per_gpu = distribute_batch_sizes(batch_sizes, num_gpus)
 
-    process_args = []
-    for gpu_id in range(num_gpus):
-        process_args.append(
+    for weight_shape in weight_shapes:
+        process_args = [
             {
                 "gpu_id": gpu_id,
-                "batch_sizes": batches_per_gpu[gpu_id],
-                "weight_shapes": weight_shapes,  # Each GPU processes all weight shapes
+                "batch_sizes": batch_sizes,
+                "weight_shape": weight_shape,
                 "args": args,
             }
-        )
+            for gpu_id, batch_sizes in enumerate(batches_per_gpu)
+        ]
 
-    ctx = mp.get_context("spawn")
-    with ctx.Pool(num_gpus) as pool:
-        pool.map(tune_on_gpu, process_args)
+        ctx = mp.get_context("spawn")
+        with ctx.Pool(num_gpus) as pool:
+            best_configs_list = pool.map(tune_on_gpu, process_args)
+
+        # merge configs from all GPU. sort by M
+        best_configs = dict(sorted(sum(best_configs_list, start=[])))
+        N, K = weight_shape
+        save_configs(N, K, best_configs, args.save_path, args.input_type)
 
     print("Multi-GPU tuning completed")
 
