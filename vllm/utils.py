@@ -2929,3 +2929,106 @@ def is_torch_equal_or_newer(target: str) -> bool:
 def _is_torch_equal_or_newer(torch_version: str, target: str) -> bool:
     torch_version = version.parse(torch_version)
     return torch_version >= version.parse(target)
+
+
+class GrowingMemoryObjGraph:
+
+    def __init__(self):
+        from vllm import envs
+        if not envs.VLLM_OBJ_GRAPH_DIR:
+            raise RuntimeError("VLLM_OBJ_GRAPH_DIR is not set.")
+        self._obj_graph_dir = envs.VLLM_OBJ_GRAPH_DIR
+        os.makedirs(self._obj_graph_dir, exist_ok=True)
+
+        self._start_state = False
+
+    def start(self) -> str:
+        import objgraph
+
+        gc.collect()
+        objgraph.growth()
+        self._start_state = True
+        self.start_time = time.time()
+        return "start growing obj graph statistics"
+
+    def stop(self) -> str:
+        import objgraph
+
+        if not self._start_state:
+            msg = "obj graph statistics is not started"
+            logger.warning(msg)
+            return msg
+
+        # Generate output filename with date
+        current_date = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        # Create subdirectory for this analysis
+        analysis_dir = os.path.join(self._obj_graph_dir,
+                                    f"analysis_{current_date}")
+        try:
+            os.makedirs(analysis_dir, exist_ok=True)
+        except OSError as e:
+            logger.error("Failed to create directory %s: %s", analysis_dir, e)
+            return f"Failed to create directory: {e}"
+
+        output_lines = []
+        start_time_formatted = datetime.datetime.fromtimestamp(
+            self.start_time).strftime("%Y-%m-%d %H:%M:%S")
+        current_time_formatted = datetime.datetime.now().strftime(
+            "%Y-%m-%d %H:%M:%S")
+        output_lines.append(f"{'='*50}")
+        output_lines.append(
+            f"start {start_time_formatted}, current: {current_time_formatted}")
+        output_lines.append(f"{'='*50}")
+
+        gc.collect()
+        growth_info = objgraph.growth()
+
+        for gt in growth_info:
+            output_lines.append(
+                f"Growth type: {gt[0]}, Count: {gt[1]}, Growth amount: {gt[2]}"
+            )
+
+        for gt in growth_info:
+            # Get the first object of this type
+            try:
+                obj = objgraph.by_type(gt[0])[0]
+            except IndexError:
+                logger.warning("Type %s has no available objects", gt[0])
+                continue
+
+        # Generate back reference graph
+        objgraph.show_backrefs(
+            obj,
+            max_depth=10,
+            too_many=5,
+            filename=os.path.join(analysis_dir, f"{gt[0]}_backrefs.dot"),
+        )
+
+        # Generate reference graph
+        objgraph.show_refs(
+            obj,
+            max_depth=10,
+            too_many=5,
+            filename=os.path.join(analysis_dir, f"{gt[0]}_refs.dot"),
+        )
+
+        # Generate reference chain to module
+        objgraph.show_chain(
+            objgraph.find_backref_chain(obj, objgraph.is_proper_module),
+            filename=os.path.join(analysis_dir, f"{gt[0]}_chain.dot"),
+        )
+
+        output_file_path = os.path.join(analysis_dir,
+                                        "growing_memory_stats.log")
+        try:
+            with open(output_file_path, 'w', encoding='utf-8') as f:
+                for line in output_lines:
+                    f.write(line + '\n')
+        except OSError as e:
+            logger.error("Failed to write to file %s: %s", output_file_path, e)
+            return f"Failed to write to file: {e}"
+
+        logger.info("obj graph statistics completed, output_lines: %s",
+                    output_lines)
+        return "obj graph statistics completed"
