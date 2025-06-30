@@ -1303,8 +1303,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
 
         # Prepare the decoder inputs.
         (attn_metadata, attention_cuda_graphs, logits_indices,
-         spec_decode_metadata,
-         num_scheduled_tokens_np,
+         spec_decode_metadata, num_scheduled_tokens_np,
          decode_mask) = (self._prepare_inputs(scheduler_output))
         num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
         if (self.use_cuda_graph
@@ -1687,6 +1686,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             # This is used in non-shifted prefill for eagle draft.
             prefill_first_hiddens = []
             full_prefill_mask = []
+            partial_prefill_mask = []
             for i, token_ids in enumerate(sampled_token_ids):
                 req_id = self.input_batch.req_ids[i]
                 req_state = self.requests[req_id]
@@ -1695,7 +1695,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 # works very well for init the first prefill hidden state.
                 if req_state.prefill_hidden_states is None:
                     req_state.prefill_hidden_states = target_hidden_states[
-                        cu_num_tokens[i]]
+                        cu_num_tokens[i + 1] - 1]
                 prefill_first_hiddens.append(req_state.prefill_hidden_states)
                 num_prompt_tokens = req_state.num_prompt_tokens
                 num_scheduled_tokens = scheduler_output.num_scheduled_tokens[
@@ -1707,6 +1707,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 if token_ids:
                     # Common case.
                     next_token_id = token_ids[-1]
+                    partial_prefill_mask.append(False)
                 else:
                     # Partial prefill (rare case).
                     # Get the next token id from the request state.
@@ -1719,6 +1720,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                     # as the first prefill hidden for the next round
                     req_state.prefill_hidden_states = target_hidden_states[
                         last_hidden_index]
+                    partial_prefill_mask.append(True)
                 next_token_ids.append(next_token_id)
             next_token_ids = torch.tensor(next_token_ids,
                                           dtype=torch.int32,
@@ -1727,6 +1729,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             full_prefill_mask = torch.tensor(full_prefill_mask,
                                              dtype=torch.bool,
                                              device=self.device)
+            partial_prefill_mask = torch.tensor(partial_prefill_mask,
+                                                dtype=torch.bool,
+                                                device=self.device)
             draft_token_ids = self.drafter.propose(
                 target_token_ids=target_token_ids,
                 target_positions=target_positions,
@@ -1740,6 +1745,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 prefill_first_hiddens=prefill_first_hiddens,
                 decode_mask=decode_mask,
                 full_prefill_mask=full_prefill_mask,
+                partial_prefill_mask=partial_prefill_mask,
             )
             spec_token_ids = draft_token_ids.tolist()
         return spec_token_ids
