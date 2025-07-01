@@ -34,6 +34,8 @@ from vllm.v1.worker.block_table import BlockTable
 if TYPE_CHECKING:
     from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 
+from vllm.v1.attention.backends.utils import slice_query_start_locs
+
 logger = init_logger(__name__)
 
 
@@ -174,26 +176,18 @@ class FlashAttentionMetadataBuilder(
 
     def build(
         self, common_prefix_len: int,
-        common_attn_metadata: CommonAttentionMetadata
+        common_attn_metadata: CommonAttentionMetadata,
+        ubatch_id: Optional[int] = None,
     ) -> FlashAttentionMetadata:
         num_reqs = common_attn_metadata.num_reqs
         num_actual_tokens = common_attn_metadata.num_actual_tokens
         max_query_len = common_attn_metadata.max_query_len
 
-        max_seq_len = int(self.runner.seq_lens_np[:num_reqs].max())
+        max_seq_len = int(common_attn_metadata.seq_lens_cpu.max())
         query_start_loc = common_attn_metadata.query_start_loc
         seq_lens = common_attn_metadata.seq_lens
-        block_table = self.block_table
-        block_table_tensor = block_table.get_device_tensor()[:num_reqs]
-
-        block_table.slot_mapping[:num_actual_tokens].copy_(
-            block_table.slot_mapping_cpu[:num_actual_tokens],
-            non_blocking=True)
-        # Fill unused with -1. Needed for reshape_and_cache in full cuda graph
-        # mode.
-        block_table.slot_mapping[num_actual_tokens:].fill_(-1)
-
-        slot_mapping = block_table.slot_mapping[:num_actual_tokens]
+        block_table_tensor = common_attn_metadata.block_table_tensor
+        slot_mapping = common_attn_metadata.slot_mapping
 
         if self.aot_sliding_window is None:
             self.aot_sliding_window = (-1, -1)

@@ -4,7 +4,7 @@ import abc
 import functools
 from abc import abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
+from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar, Optional
 
 import numpy as np
 import torch
@@ -19,6 +19,7 @@ import vllm.envs as envs
 from vllm.distributed.kv_transfer.kv_connector.utils import (
     get_kv_connector_cache_layout)
 from vllm.logger import init_logger
+from vllm.v1.worker.block_table import BlockTable
 
 logger = init_logger(__name__)
 
@@ -31,8 +32,11 @@ class CommonAttentionMetadata:
     """
 
     query_start_loc: torch.Tensor
+    query_start_loc_cpu: torch.Tensor
     """(batch_size + 1,), the start location of each request in query Tensor"""
+
     seq_lens: torch.Tensor
+    seq_lens_cpu: torch.Tensor
     """(batch_size,), the length of each request including both computed tokens
     and newly scheduled tokens"""
 
@@ -43,6 +47,92 @@ class CommonAttentionMetadata:
     max_query_len: int
     """Longest query in batch"""
 
+    block_table_tensor: torch.Tensor
+    slot_mapping: torch.Tensor
+    slot_mapping_cpu: torch.Tensor
+    
+    def __post_init__(self):
+        self.slot_mapping[:self.num_actual_tokens].copy_(
+            self.slot_mapping_cpu[:self.num_actual_tokens],
+            non_blocking=True)
+        # Fill unused with -1. Needed for reshape_and_cache in full cuda graph
+        # mode.
+        self.slot_mapping[self.num_actual_tokens:].fill_(-1)
+    
+    # CUDA Graph Buffers; 2 possible slots for dual batch overlap
+    _cg_query_start_loc: ClassVar[list[Optional[torch.Tensor]]] = [None, None]
+    _cg_seq_lens: ClassVar[list[Optional[torch.Tensor]]] = [None, None]
+
+    def compute_request_slice(self, token_slice: slice) -> slice:
+        """
+        use the query_start_loc_cpu to find the requests that the token_slice
+         spans.
+        """
+        if self.max_query_len == 1:
+            # Pure decode
+            return token_slice
+        else:
+            # Find the first query_start_loc that's greater than the token_slice.start
+            first_request = (self.query_start_loc_cpu >= token_slice.start).int().argmax(dim=-1).item()
+            last_request = (self.query_start_loc_cpu < token_slice.stop).int().argmax(dim=-1).item()
+            return slice(first_request, last_request)
+
+    # Slice the current CommonAttentionMetatdata for microbatching
+    def _slice(self, token_slice: slice, cg_buffer_idx: Optional[int]) -> 'CommonAttentionMetadata':
+        request_slice = self.compute_request_slice(token_slice)
+        cg_idx = cg_buffer_idx
+        
+        num_requests = request_slice.stop - request_slice.start
+        num_actual_tokens = token_slice.stop - token_slice.start
+
+        query_start_loc = slice_query_start_locs(
+            self.query_start_loc, request_slice)
+        query_start_loc_cpu = slice_query_start_locs(
+            self.query_start_loc_cpu, request_slice)
+        
+        seq_lens = self.seq_lens[request_slice]
+        seq_lens_cpu = self.seq_lens_cpu[request_slice]
+        
+        # If we are ending partially in a request, adjust the seqlen to account
+        #  for the "chopped off" tokens
+        # Use the un-modified query_start_loc_cpu to compute the number of tokens in the last request
+        if self.query_start_loc_cpu[request_slice.stop] > token_slice.stop:
+            seq_lens_cpu[num_requests - 1] -= token_slice.stop - self.query_start_loc_cpu[request_slice.stop]
+            # TODO(lucas): Try to avoid CPU to GPU transfer here?
+            seq_lens[num_requests - 1] = seq_lens_cpu[num_requests - 1]
+        
+        if cg_idx is not None:
+            # if cg_buffer_idx is not none we copy into local static buffers
+            # to make sure the common attention metadata cudagraph compilable
+            # NOTE(lucas): this assumes cudagraphs are captured in descending
+            # order of size.
+            if self._cg_query_start_loc[cg_idx] is None:
+                self._cg_query_start_loc[cg_idx] = query_start_loc
+                self._cg_seq_lens[cg_idx] = seq_lens
+            
+            # Alias to appease the type checker
+            cg_seq_lens = self._cg_seq_lens[cg_idx]
+            cg_query_start_loc = self._cg_query_start_loc[cg_idx]
+            assert cg_seq_lens is not None and cg_query_start_loc is not None
+            cg_seq_lens[:num_requests].copy_(
+                seq_lens, non_blocking=True)
+            cg_query_start_loc[:num_requests+1].copy_(
+                query_start_loc, non_blocking=True)
+            seq_lens = cg_seq_lens[:num_requests]
+            query_start_loc = cg_query_start_loc[:num_requests+1]
+        
+        return CommonAttentionMetadata(
+            query_start_loc=query_start_loc,
+            query_start_loc_cpu=query_start_loc_cpu,
+            seq_lens=seq_lens,
+            seq_lens_cpu=seq_lens_cpu,
+            num_reqs=num_requests,
+            num_actual_tokens=num_actual_tokens,
+            max_query_len=self.max_query_len,
+            block_table_tensor=self.block_table_tensor[request_slice],
+            slot_mapping=self.slot_mapping[token_slice],
+            slot_mapping_cpu=self.slot_mapping_cpu[token_slice],
+        )
 
 M = TypeVar("M")
 
@@ -53,7 +143,8 @@ class AttentionMetadataBuilder(abc.ABC, Generic[M]):
 
     @abstractmethod
     def build(self, common_prefix_len: int,
-              common_attn_metadata: CommonAttentionMetadata) -> M:
+              common_attn_metadata: CommonAttentionMetadata,
+              ubatch_id: Optional[int] = None) -> M:
         """
         Central method that builds attention metadata.
         Some builders (MLA) require reorder_batch to be called prior to build.
@@ -97,6 +188,13 @@ class AttentionMetadataBuilder(abc.ABC, Generic[M]):
         """
         return False
 
+
+def slice_query_start_locs(
+    query_start_loc: torch.Tensor,
+    req_slice: slice,
+) -> torch.Tensor:
+    return query_start_loc[req_slice.start: req_slice.stop + 1] -\
+        query_start_loc[req_slice.start]
 
 def validate_kv_sharing_target(current_layer_name, target_layer_name,
                                static_forward_context):

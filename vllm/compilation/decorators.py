@@ -157,6 +157,7 @@ def _support_torch_compile(
             vllm_config.compilation_config.level in [
             CompilationLevel.NO_COMPILATION, CompilationLevel.DYNAMO_AS_IS
         ] or not supports_dynamo()
+        self.do_not_compile = True
         if self.do_not_compile:
             return
         compilation_counter.num_models_seen += 1
@@ -170,6 +171,7 @@ def _support_torch_compile(
         # e.g. TPU has the compilation logic in model runner, so we don't
         # need to compile the model inside.
         if self.do_not_compile or torch.compiler.is_compiling():
+            # logger.info("SKIPPING COMPILATION")
             return self.forward(*args, **kwargs)
 
         # the first compilation needs to have dynamic shapes marked
