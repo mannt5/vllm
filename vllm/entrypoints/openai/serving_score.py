@@ -29,6 +29,7 @@ from vllm.transformers_utils.tokenizer import (AnyTokenizer, MistralTokenizer,
                                                PreTrainedTokenizer,
                                                PreTrainedTokenizerFast)
 from vllm.utils import make_async, merge_async_iterators
+from pydantic import BaseModel
 
 logger = init_logger(__name__)
 
@@ -431,3 +432,46 @@ class ServingScores(OpenAIServing):
             model=model_name,
             results=results,
             usage=RerankUsage(total_tokens=num_prompt_tokens))
+
+from fastapi import APIRouter, Request
+from transformers import AutoTokenizer
+import torch
+import re
+
+def clean_chatml(text: str) -> str:
+    return re.sub(r"<\|im_(start|end)\|>\s*", "", text)
+
+router = APIRouter()
+
+class ScoreInput(BaseModel):
+    prompt: str
+    response: str
+
+class ScoreOutput(BaseModel):
+    score: float
+
+@router.post("/v1/score", response_model=ScoreOutput)
+async def score_reward_model(payload: ScoreInput, request: Request):
+    try:
+        engine = request.app.state.engine
+        tokenizer = request.app.state.tokenizer
+        reward_model = request.app.state.reward_model
+
+        prompt = clean_chatml(payload.prompt.strip())
+        response = clean_chatml(payload.response.strip()) + tokenizer.eos_token
+        full_input = prompt + response
+
+        inputs = tokenizer([full_input], return_tensors="pt")
+
+        with torch.no_grad():
+            score = reward_model.score(
+                input_ids=inputs["input_ids"],
+                attention_mask=inputs["attention_mask"]
+            ).item()
+
+        return {"score": score}
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"score": -1.0}
