@@ -1004,6 +1004,4 @@ def _get_causal_option(attn_type: str) -> bool:
         attention (i.e., not encoder, encoder-only, or encoder-decoder), 
         otherwise returns `False`.
     """
-    return not (attn_type == AttentionType.ENCODER
-                or attn_type == AttentionType.ENCODER_ONLY
-                or attn_type == AttentionType.ENCODER_DECODER)
+    return attn_type == AttentionType.DECODER
