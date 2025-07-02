@@ -78,7 +78,7 @@ ARG GET_PIP_URL
 RUN echo 'tzdata tzdata/Areas select America' | debconf-set-selections \
     && echo 'tzdata tzdata/Zones/America select Los_Angeles' | debconf-set-selections \
     && apt-get update -y \
-    && apt-get install -y ccache software-properties-common git curl sudo libnuma-dev \
+    && apt-get install -y ccache software-properties-common git curl sudo \
     && if [ ! -z ${DEADSNAKES_MIRROR_URL} ] ; then \
         if [ ! -z "${DEADSNAKES_GPGKEY_URL}" ] ; then \
             mkdir -p -m 0755 /etc/apt/keyrings ; \
@@ -257,6 +257,9 @@ ARG PYTORCH_CUDA_INDEX_BASE_URL
 # Reference: https://github.com/astral-sh/uv/pull/1694
 ENV UV_HTTP_TIMEOUT=500
 ENV UV_INDEX_STRATEGY="unsafe-best-match"
+
+# Workaround for #20384
+RUN apt-get update && apt-get install -y libnuma-dev && rm -rf /var/lib/apt/lists/*
 
 # Workaround for #17068
 RUN --mount=type=cache,target=/root/.cache/uv \
