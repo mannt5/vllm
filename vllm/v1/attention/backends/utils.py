@@ -59,6 +59,14 @@ class CommonAttentionMetadata:
     block_table_tensor: torch.Tensor
     slot_mapping: torch.Tensor
 
+    # Encoder/cross-attention specific fields (optional)
+    encoder_seq_start_loc: Optional[torch.Tensor] = None
+    """(batch_size + 1,), cumulative encoder sequence lengths"""
+    max_encoder_seq_len: Optional[int] = None
+    """Maximum encoder sequence length in batch"""
+    cross_slot_mapping: Optional[torch.Tensor] = None
+    """Slot mapping for cross-attention KV cache"""
+
     def __post_init__(self):
         # Fill unused with -1. Needed for reshape_and_cache in full cuda graph
         # mode.
