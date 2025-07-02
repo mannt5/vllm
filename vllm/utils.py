@@ -47,7 +47,7 @@ from types import MappingProxyType
 from typing import (TYPE_CHECKING, Any, Callable, Generic, Literal, NamedTuple,
                     Optional, Sequence, Tuple, Type, TypeVar, Union, cast,
                     overload)
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 from uuid import uuid4
 
 import cachetools
@@ -2952,6 +2952,44 @@ def is_torch_equal_or_newer(target: str) -> bool:
     except Exception:
         # Fallback to PKG-INFO to load the package info, needed by the doc gen.
         return Version(importlib.metadata.version('torch')) >= Version(target)
+
+
+def build_uri(scheme: str,
+              host: str,
+              port: Optional[int] = None,
+              path: str = "",
+              params: str = "",
+              query: str = "",
+              fragment: str = "") -> str:
+    """
+    Robustly build a URI that properly handles IPv6 addresses.
+    
+    Args:
+        scheme: URI scheme (e.g., 'http', 'https')
+        host: hostname or IP address
+        port: port number (optional)
+        path: path component
+        params: parameters component
+        query: query string
+        fragment: fragment identifier
+    
+    Returns:
+        Complete URI string
+    """
+    # Handle IPv6 addresses
+    if host:
+        try:
+            # Check if it's an IPv6 address
+            ip = ipaddress.ip_address(host)
+            # Ensure IPv6 addresses are bracketed
+            if (isinstance(ip, ipaddress.IPv6Address)
+                    and not (host.startswith('[') and host.endswith(']'))):
+                host = f'[{host}]'
+        except ValueError:
+            pass
+
+    netloc = f"{host}:{port}" if port else host
+    return urlunparse((scheme, netloc, path, params, query, fragment))
 
 
 # Helper function used in testing.
