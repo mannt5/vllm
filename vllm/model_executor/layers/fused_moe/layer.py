@@ -29,8 +29,11 @@ from vllm.model_executor.layers.fused_moe.modular_kernel import (
     FusedMoEPermuteExpertsUnpermute, FusedMoEPrepareAndFinalize)
 from vllm.model_executor.layers.fused_moe.rocm_aiter_fused_moe import (
     is_rocm_aiter_moe_enabled)
+from vllm.model_executor.layers.fused_moe.utils import (
+    collect_expert_usage_histogram)
 from vllm.model_executor.layers.quantization.base_config import (
     QuantizationConfig, QuantizeMethodBase)
+from vllm.model_executor.models.utils import extract_layer_index
 from vllm.model_executor.utils import set_weight_attrs
 from vllm.platforms import current_platform
 from vllm.platforms.interface import CpuArchEnum
@@ -202,6 +205,7 @@ class FusedMoEMethodBase(QuantizeMethodBase):
         router_logits: torch.Tensor,
         top_k: int,
         renormalize: bool,
+        layer_index: int,
         use_grouped_topk: bool = False,
         topk_group: Optional[int] = None,
         num_expert_group: Optional[int] = None,
@@ -342,6 +346,7 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
         router_logits: torch.Tensor,
         top_k: int,
         renormalize: bool,
+        layer_index: int,
         use_grouped_topk: bool = False,
         topk_group: Optional[int] = None,
         num_expert_group: Optional[int] = None,
@@ -367,6 +372,7 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
             router_logits=router_logits,
             top_k=top_k,
             renormalize=renormalize,
+            layer_index=layer_index,
             use_grouped_topk=use_grouped_topk,
             topk_group=topk_group,
             num_expert_group=num_expert_group,
@@ -386,6 +392,7 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
         top_k: int,
         router_logits: torch.Tensor,
         renormalize: bool,
+        layer_index: int,
         topk_group: Optional[int] = None,
         num_expert_group: Optional[int] = None,
         global_num_experts: int = -1,
@@ -403,6 +410,7 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
             use_grouped_topk=use_grouped_topk,
             top_k=top_k,
             renormalize=renormalize,
+            layer_index=layer_index,
             topk_group=topk_group,
             num_expert_group=num_expert_group,
             custom_routing_function=custom_routing_function,
@@ -442,6 +450,7 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
         top_k: int,
         router_logits: torch.Tensor,
         renormalize: bool,
+        layer_index: int,
         topk_group: Optional[int] = None,
         num_expert_group: Optional[int] = None,
         global_num_experts: int = -1,
@@ -479,6 +488,7 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
         top_k: int,
         router_logits: torch.Tensor,
         renormalize: bool,
+        layer_index: int,
         topk_group: Optional[int] = None,
         num_expert_group: Optional[int] = None,
         global_num_experts: int = -1,
@@ -512,6 +522,7 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
         top_k: int,
         router_logits: torch.Tensor,
         renormalize: bool,
+        layer_index: int,
         topk_group: Optional[int] = None,
         num_expert_group: Optional[int] = None,
         global_num_experts: int = -1,
@@ -670,6 +681,8 @@ class FusedMoE(torch.nn.Module):
             raise ValueError("Duplicate layer name: {}".format(prefix))
         compilation_config.static_forward_context[prefix] = self
         self.layer_name = prefix
+
+        self.layer_index = extract_layer_index(prefix)
 
         self.enable_eplb = enable_eplb
         self.expert_load_view: Optional[torch.Tensor] = None
@@ -1173,6 +1186,7 @@ class FusedMoE(torch.nn.Module):
         top_k: int,
         use_grouped_topk: bool,
         renormalize: bool,
+        layer_index: int,
         topk_group: Optional[int] = None,
         num_expert_group: Optional[int] = None,
         custom_routing_function: Optional[Callable] = None,
@@ -1299,6 +1313,12 @@ class FusedMoE(torch.nn.Module):
 
             topk_ids = topk_ids.to(dtype=indices_type)
 
+        expert_usage_histogram = get_forward_context().expert_usage_histogram
+
+        if expert_usage_histogram is not None:
+            collect_expert_usage_histogram(topk_ids,
+                                           expert_usage_histogram[layer_index])
+
         return topk_weights, topk_ids
 
     def must_reduce_shared_expert_outputs(self) -> bool:
@@ -1331,7 +1351,7 @@ class FusedMoE(torch.nn.Module):
     def forward(self, hidden_states: torch.Tensor,
                 router_logits: torch.Tensor):
         return torch.ops.vllm.moe_forward(hidden_states, router_logits,
-                                          self.layer_name)
+                                          self.layer_name, self.layer_index)
 
     def forward_impl_chunked(self, full_hidden_states: torch.Tensor,
                              full_router_logits: torch.Tensor):
@@ -1370,6 +1390,7 @@ class FusedMoE(torch.nn.Module):
                 router_logits=staged_router_logits,
                 top_k=self.top_k,
                 renormalize=self.renormalize,
+                layer_index=self.layer_index,
                 use_grouped_topk=self.use_grouped_topk,
                 global_num_experts=self.global_num_experts,
                 expert_map=self.expert_map,
@@ -1410,7 +1431,7 @@ class FusedMoE(torch.nn.Module):
         return full_final_hidden_states
 
     def forward_impl(self, hidden_states: torch.Tensor,
-                     router_logits: torch.Tensor):
+                     router_logits: torch.Tensor, layer_index: int):
         assert self.quant_method is not None
         if (self.moe_parallel_config.use_pplx_kernels
                 or self.moe_parallel_config.use_deepep_ll_kernels):
@@ -1430,6 +1451,7 @@ class FusedMoE(torch.nn.Module):
             router_logits=router_logits,
             top_k=self.top_k,
             renormalize=self.renormalize,
+            layer_index=layer_index,
             use_grouped_topk=self.use_grouped_topk,
             global_num_experts=self.global_num_experts,
             expert_map=self.expert_map,
@@ -1510,16 +1532,16 @@ class FusedMoE(torch.nn.Module):
 
 
 def moe_forward(hidden_states: torch.Tensor, router_logits: torch.Tensor,
-                layer_name: str) -> torch.Tensor:
+                layer_name: str, layer_index: int) -> torch.Tensor:
     forward_context: ForwardContext = get_forward_context()
     self = forward_context.no_compile_layers[layer_name]
     assert self.quant_method is not None
 
-    return self.forward_impl(hidden_states, router_logits)
+    return self.forward_impl(hidden_states, router_logits, layer_index)
 
 
 def moe_forward_fake(hidden_states: torch.Tensor, router_logits: torch.Tensor,
-                     layer_name: str) -> torch.Tensor:
+                     layer_name: str, layer_index: int) -> torch.Tensor:
     return torch.empty_like(hidden_states)
 
 
