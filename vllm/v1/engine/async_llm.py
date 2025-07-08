@@ -356,9 +356,9 @@ class AsyncLLM(EngineClient):
             await self.abort(request_id)
             if self.log_requests:
                 try:
-                    s = str(e)
-                except:
-                    s = e.__class__.__name__ + " (unprintable)"
+                    s = f"{e.__class__.__name__}: {e}"
+                except Exception as e2:
+                    s = f"{e.__class__.__name__}: (unprintable due to further error {e2.__class__.__name__})"
                 logger.info("Request %s failed due to %s.", request_id, s)
             raise EngineGenerateError() from e
 
