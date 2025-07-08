@@ -346,16 +346,20 @@ class AsyncLLM(EngineClient):
             raise
 
         # Request validation error.
-        except ValueError:
+        except ValueError as e:
             if self.log_requests:
-                logger.info("Request %s failed (bad request).", request_id)
+                logger.info("Request %s failed (bad request): %s.", request_id, e)
             raise
 
         # Unexpected error in the generate() task (possibly recoverable).
         except Exception as e:
             await self.abort(request_id)
             if self.log_requests:
-                logger.info("Request %s failed.", request_id)
+                try:
+                    s = str(e)
+                except:
+                    s = e.__class__.__name__ + " (unprintable)"
+                logger.info("Request %s failed due to %s.", request_id, s)
             raise EngineGenerateError() from e
 
     def _run_output_handler(self):
