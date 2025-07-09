@@ -49,6 +49,15 @@ class BlockTable:
                                         dtype=torch.int64,
                                         device=self.device)
 
+        self.occupied_slot_mapping_cpu = torch.zeros(self.max_num_batched_tokens,
+                                                    dtype=torch.int64,
+                                                    device="cpu",
+                                                    pin_memory=self.pin_memory)
+        self.occupied_slot_mapping_np = self.occupied_slot_mapping_cpu.numpy()
+        self.occupied_slot_mapping = torch.zeros(self.max_num_batched_tokens,
+                                                 dtype=torch.int64,
+                                                 device=self.device)
+
     def append_row(
         self,
         block_ids: list[int],

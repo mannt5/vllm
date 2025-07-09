@@ -42,6 +42,8 @@ class CommonAttentionMetadata:
     """Total number of tokens in batch"""
     max_query_len: int
     """Longest query in batch"""
+    total_num_kv_cache_tokens: int
+    """Total number of kv cache tokens in batch"""
 
 
 M = TypeVar("M")

@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING, Any, ClassVar, Optional
 import numpy as np
 import torch
 
+from rkv.modeling import R1KV
+
 from vllm import _custom_ops as ops
 from vllm.attention.backends.abstract import (AttentionBackend, AttentionImpl,
                                               AttentionMetadata, AttentionType,
@@ -23,6 +25,7 @@ if is_flash_attn_varlen_func_available():
                                                reshape_and_cache_flash)
 
 from vllm.config import VllmConfig, get_layers_from_vllm_config
+from vllm.envs import VLLM_V1_R_KV_BUDGET, VLLM_V1_R_KV_BUFFER
 from vllm.logger import init_logger
 from vllm.utils import cdiv
 from vllm.v1.attention.backends.utils import (
@@ -117,6 +120,9 @@ class FlashAttentionMetadata:
     seq_lens: torch.Tensor
     block_table: torch.Tensor
     slot_mapping: torch.Tensor
+    num_reqs: int
+    num_dropped_tokens_list: list[int]
+    occupied_slot_mapping: torch.Tensor
 
     # For cascade attention.
     use_cascade: bool
@@ -214,6 +220,7 @@ class FlashAttentionMetadataBuilder(
         num_reqs = common_attn_metadata.num_reqs
         num_actual_tokens = common_attn_metadata.num_actual_tokens
         max_query_len = common_attn_metadata.max_query_len
+        total_num_kv_cache_tokens = common_attn_metadata.total_num_kv_cache_tokens
 
         max_seq_len = int(self.runner.seq_lens_np[:num_reqs].max())
         query_start_loc = common_attn_metadata.query_start_loc
@@ -229,6 +236,15 @@ class FlashAttentionMetadataBuilder(
         block_table.slot_mapping[num_actual_tokens:].fill_(-1)
 
         slot_mapping = block_table.slot_mapping[:num_actual_tokens]
+
+        block_table.occupied_slot_mapping[:total_num_kv_cache_tokens].copy_(
+            block_table.occupied_slot_mapping_cpu[:total_num_kv_cache_tokens],
+            non_blocking=True)
+        # Fill unused with -1. Needed for reshape_and_cache in full cuda graph
+        # mode.
+        block_table.occupied_slot_mapping[total_num_kv_cache_tokens:].fill_(-1)
+
+        occupied_slot_mapping = block_table.occupied_slot_mapping[:total_num_kv_cache_tokens]
 
         if self.aot_sliding_window is None:
             self.aot_sliding_window = (-1, -1)
@@ -358,6 +374,8 @@ class FlashAttentionMetadataBuilder(
             # we only set num_splits when using cuda graphs.
             max_num_splits = self.max_num_splits
 
+        num_dropped_tokens_list = [0] * num_reqs
+
         attn_metadata = FlashAttentionMetadata(
             num_actual_tokens=num_actual_tokens,
             max_query_len=max_query_len,
@@ -375,6 +393,9 @@ class FlashAttentionMetadataBuilder(
             local_attn_metadata=local_attn_metadata,
             prefix_scheduler_metadata=prefix_scheduler_metadata,
             max_num_splits=max_num_splits,
+            num_reqs=num_reqs,
+            num_dropped_tokens_list=num_dropped_tokens_list,
+            occupied_slot_mapping=occupied_slot_mapping,
         )
         return attn_metadata
 
@@ -440,6 +461,7 @@ class FlashAttentionImpl(AttentionImpl):
             and not flash_attn_supports_fp8():
             raise NotImplementedError(
                 "FlashAttention does not support fp8 kv-cache on this device.")
+        self.kvcompressor = R1KV(budget=VLLM_V1_R_KV_BUDGET)
 
     def forward(
         self,
@@ -564,6 +586,55 @@ class FlashAttentionImpl(AttentionImpl):
                 v_descale=layer._v_scale.expand(descale_shape),
                 num_splits=attn_metadata.max_num_splits,
             )
+            seq_starts_ends_indices = torch.concat(
+                (torch.tensor([0], dtype=torch.int32, device=attn_metadata.seq_lens.device),
+                 torch.cumsum(attn_metadata.seq_lens, dim=0) - 1),
+                dim=0
+            )
+            if VLLM_V1_R_KV_BUDGET <= 0 or VLLM_V1_R_KV_BUFFER <= 0:
+                return output
+            for i in range(attn_metadata.num_reqs):
+                if attn_metadata.seq_lens[i].cpu().item() < VLLM_V1_R_KV_BUDGET + VLLM_V1_R_KV_BUFFER:
+                    continue
+                current_key_cache = key_cache.view(-1, key_cache.size(-2), key_cache.size(-1))[
+                    attn_metadata.occupied_slot_mapping[seq_starts_ends_indices[i]:seq_starts_ends_indices[i + 1]], ...
+                ]
+                current_value_cache = value_cache.view(-1, value_cache.size(-2), value_cache.size(-1))[
+                    attn_metadata.occupied_slot_mapping[seq_starts_ends_indices[i]:seq_starts_ends_indices[i + 1]], ...
+                ]
+
+                # [num_heads, num_tokens, head_dim]
+                current_query = query.transpose(0, 1)
+                current_key_cache = current_key_cache.transpose(0, 1)
+                current_value_cache = current_value_cache.transpose(0, 1)
+
+                # [batch_size, num_heads, num_tokens, head_dim]
+                current_query = current_query.unsqueeze(0)
+                current_key_cache = current_key_cache.unsqueeze(0)
+                current_value_cache = current_value_cache.unsqueeze(0)
+
+                current_kv_len = current_key_cache.size(2)
+                compressed_key_cache, compressed_value_cache = self.kvcompressor.update_kv(
+                    current_key_cache,
+                    current_query,
+                    current_value_cache,
+                )
+                compressed_key_cache = compressed_key_cache.squeeze(0)
+                compressed_value_cache = compressed_value_cache.squeeze(0)
+
+                # overwrite key_cache and value_cache
+                compressed_kv_len = compressed_key_cache.size(1)
+                key_cache.view(-1, key_cache.size(-2), key_cache.size(-1))[
+                    attn_metadata.occupied_slot_mapping[seq_starts_ends_indices[i]:seq_starts_ends_indices[i]+compressed_kv_len], ...
+                ] = compressed_key_cache.transpose(0, 1)
+                value_cache.view(-1, value_cache.size(-2), value_cache.size(-1))[
+                    attn_metadata.occupied_slot_mapping[seq_starts_ends_indices[i]:seq_starts_ends_indices[i]+compressed_kv_len], ...
+                ] = compressed_value_cache.transpose(0, 1)
+
+                num_dropped_tokens_i = current_kv_len - compressed_kv_len
+                if num_dropped_tokens_i != attn_metadata.num_dropped_tokens_list[i]:
+                    assert attn_metadata.num_dropped_tokens_list[i] == 0
+                    attn_metadata.num_dropped_tokens_list[i] = num_dropped_tokens_i
             return output
 
         assert not use_local_attn, (
