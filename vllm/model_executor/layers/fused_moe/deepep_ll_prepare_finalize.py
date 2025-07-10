@@ -9,6 +9,9 @@ import vllm.model_executor.layers.fused_moe.modular_kernel as mk
 from vllm.model_executor.layers.fused_moe.config import FusedMoEQuantConfig
 from vllm.model_executor.layers.fused_moe.utils import (
     moe_kernel_quantize_input, normalize_batched_scales_shape)
+from vllm.v1.worker.ubatching import (
+    get_current_ubatch_context, yield_and_switch_from_comm_to_compute,
+    yield_and_switch_from_compute_to_comm)
 
 # DeepEP kernels quantize dispatch inputs in 128 element chunks.
 DEEPEP_QUANT_BLOCK_SIZE = 128
@@ -41,19 +44,19 @@ class DeepEPLLPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
     SUPPORTED_HIDDEN_SIZES = [2048, 2560, 4096, 5120, 7168]
 
     def __init__(self,
-                 buffer: deep_ep.Buffer,
+                 buffers: list[deep_ep.Buffer],
                  max_tokens_per_rank: int,
                  num_dispatchers: int,
                  use_fp8_dispatch: bool = False):
         super().__init__()
 
-        self.buffer = buffer
+        self.buffers = buffers
         self.max_tokens_per_rank = max_tokens_per_rank
         self.use_fp8_dispatch = use_fp8_dispatch
         # The dispatch function returns a handle that the combine function
         # requires. We store the handle here so it is available to the
         # combine function.
-        self.handle = None
+        self.handles: list[Optional[tuple]] = [None, None]
         self.num_dispatchers_ = num_dispatchers
 
     def num_dispatchers(self) -> int:
@@ -124,9 +127,11 @@ class DeepEPLLPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
                Optional[torch.Tensor]]:
 
         hidden_size = a1.size(1)
-        assert hidden_size in self.SUPPORTED_HIDDEN_SIZES, \
-            (f"Hidden Size {hidden_size} not in supported list of hidden sizes"
-            f"{self.SUPPORTED_HIDDEN_SIZES}")
+        ubatch_ctx = get_current_ubatch_context()
+        a2a_idx = ubatch_ctx.id if ubatch_ctx is not None else 0
+        # assert hidden_size in self.SUPPORTED_HIDDEN_SIZES, \
+        #     (f"Hidden Size {hidden_size} not in supported list of hidden sizes"
+        #     f"{self.SUPPORTED_HIDDEN_SIZES}")
 
         if self.use_fp8_dispatch:
             assert hidden_size % 128 == 0, \
@@ -146,14 +151,17 @@ class DeepEPLLPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
             a1 = a1 * topk_weights.to(a1.dtype)
 
         # Dispatch
-        expert_x, expert_num_tokens, self.handle, event, hook = \
-                self.buffer.low_latency_dispatch(a1,
+        yield_and_switch_from_compute_to_comm(schedule="default")
+        expert_x, expert_num_tokens, handle, _, _= \
+                self.buffers[a2a_idx].low_latency_dispatch(a1,
                                                 topk_ids,
                                                 self.max_tokens_per_rank,
                                                 num_experts,
                                                 use_fp8=self.use_fp8_dispatch,
                                                 async_finish=False,
                                                 return_recv_hook=False)
+        self.handles[a2a_idx] = handle
+        yield_and_switch_from_comm_to_compute(schedule="default")
 
         expert_x, expert_x_scale = self._do_quant(
             expert_x, a1_scale, a2_scale, a1.dtype, quant_config.quant_dtype,
@@ -168,7 +176,10 @@ class DeepEPLLPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
                  topk_weights: torch.Tensor, topk_ids: torch.Tensor,
                  apply_router_weight_on_input: bool) -> None:
 
-        assert self.handle is not None
+        ubatch_ctx = get_current_ubatch_context()
+        a2a_idx = ubatch_ctx.id if ubatch_ctx is not None else 0
+        handle = self.handles[a2a_idx]
+        assert handle is not None
 
         combine_topk_weights = topk_weights
         if apply_router_weight_on_input:
@@ -176,12 +187,15 @@ class DeepEPLLPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
             combine_topk_weights = torch.ones_like(topk_weights)
 
         # TODO (varun) : Enable zero copy mode
-        _, event, hook = self.buffer.low_latency_combine(
+        yield_and_switch_from_compute_to_comm(schedule="default")
+        _ = self.buffers[a2a_idx].low_latency_combine(
             fused_expert_output,
             topk_ids,
             combine_topk_weights,
-            self.handle,
+            handle,
             async_finish=False,
             zero_copy=False,
             return_recv_hook=False,
             out=output)
+        yield_and_switch_from_comm_to_compute(schedule="default")
+
