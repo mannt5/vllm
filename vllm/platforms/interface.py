@@ -544,7 +544,7 @@ class Platform:
         raise RuntimeError(f"Unsupported torch distributed backend: {backend}")
 
     @classmethod
-    def empty_cache(cls, ):
+    def empty_cache(cls):
         raise NotImplementedError
 
     @classmethod
@@ -565,7 +565,7 @@ class Platform:
 
     @classmethod
     def synchronize(cls):
-        torch.accelerator.synchronize()
+        raise NotImplementedError
 
 
 class UnspecifiedPlatform(Platform):
