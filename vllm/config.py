@@ -887,6 +887,10 @@ class ModelConfig:
         if quant_cfg is None:
             # compressed-tensors uses a "compression_config" key
             quant_cfg = getattr(self.hf_config, "compression_config", None)
+        if quant_cfg is not None:
+            if quant_cfg["producer"]["name"].lower() == "modelopt":
+                if "quant_algo" in quant_cfg.keys() and quant_cfg["quant_algo"].lower() == "fp8":
+                    quant_cfg = {"quant_method": "modelopt"}
         return quant_cfg
 
     def _verify_quantization(self) -> None:
