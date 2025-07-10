@@ -138,6 +138,8 @@ if TYPE_CHECKING:
     VLLM_ROCM_QUICK_REDUCE_CAST_BF16_TO_FP16: bool = True
     VLLM_ROCM_QUICK_REDUCE_MAX_SIZE_BYTES_MB: Optional[int] = None
     VLLM_NIXL_ABORT_REQUEST_TIMEOUT: int = 120
+    VLLM_V1_R_KV_BUDGET: int = 64
+    VLLM_V1_R_KV_BUFFER: int = 64
 
 
 def get_default_cache_root():
@@ -952,7 +954,20 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # consumer. This is only applicable when using NixlConnector in a
     # disaggregated decode-prefill setup.
     "VLLM_NIXL_ABORT_REQUEST_TIMEOUT":
-    lambda: int(os.getenv("VLLM_NIXL_ABORT_REQUEST_TIMEOUT", "120"))
+    lambda: int(os.getenv("VLLM_NIXL_ABORT_REQUEST_TIMEOUT", "120")),
+
+    # Sets the total KV size budget (in number of tokens) used during compression.
+    # Lowering this value can reduce memory usage but may increase recomputation overhead.
+    # Applies only to vLLM v1; not supported in vLLM v0.
+    "VLLM_V1_R_KV_BUDGET":
+    lambda: int(os.getenv("VLLM_V1_R_KV_BUDGET", "64")),
+
+    # Controls how many new tokens are generated before triggering KV compression.
+    # A larger value reduces compression frequency, which may improve throughput
+    # at the cost of memory. A smaller value compresses more frequently to save memory.
+    # Applies only to vLLM v1; not supported in vLLM v0.
+    "VLLM_V1_R_KV_BUFFER":
+    lambda: int(os.getenv("VLLM_V1_R_KV_BUFFER", "64")),
 }
 
 # --8<-- [end:env-vars-definition]

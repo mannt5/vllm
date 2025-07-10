@@ -104,6 +104,9 @@ class ModelRunnerOutput:
     # [num_reqs, hidden_size]
     pooler_output: list[Optional[torch.Tensor]]
 
+    # the number of tokens dropped due to kv cache compression for every request
+    num_dropped_tokens_list: list[int]
+
     # [req_ids]
     finished_sending: Optional[set[str]] = None
     finished_recving: Optional[set[str]] = None
@@ -119,6 +122,7 @@ EMPTY_MODEL_RUNNER_OUTPUT = ModelRunnerOutput(req_ids=[],
                                               logprobs=None,
                                               prompt_logprobs_dict={},
                                               pooler_output=[],
+                                              num_dropped_tokens_list=[],
                                               finished_sending=None,
                                               finished_recving=None,
                                               num_nans_in_logits=None)
