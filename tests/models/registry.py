@@ -315,6 +315,8 @@ _MULTIMODAL_EXAMPLE_MODELS = {
     "Blip2ForConditionalGeneration": _HfExamplesInfo("Salesforce/blip2-opt-2.7b",  # noqa: E501
                                                      extras={"6b": "Salesforce/blip2-opt-6.7b"},  # noqa: E501
                                                      v0_only=True),
+    "CheXagentForConditionalGeneration": _HfExamplesInfo("StanfordAIMI/CheXagent-8b",  # noqa: E501
+                                                         trust_remote_code=True),
     "ChameleonForConditionalGeneration": _HfExamplesInfo("facebook/chameleon-7b"),  # noqa: E501
     "DeepseekVLV2ForCausalLM": _HfExamplesInfo("deepseek-ai/deepseek-vl2-tiny",  # noqa: E501
                                                 extras={"fork": "Isotr0py/deepseek-vl2-tiny"},  # noqa: E501

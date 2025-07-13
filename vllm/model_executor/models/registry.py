@@ -182,6 +182,7 @@ _MULTIMODAL_MODELS = {
     "AriaForConditionalGeneration": ("aria", "AriaForConditionalGeneration"),
     "AyaVisionForConditionalGeneration": ("aya_vision", "AyaVisionForConditionalGeneration"),  # noqa: E501
     "Blip2ForConditionalGeneration": ("blip2", "Blip2ForConditionalGeneration"),
+    "CheXagentForConditionalGeneration": ("chexagent", "CheXagentForConditionalGeneration"),  # noqa: E501
     "ChameleonForConditionalGeneration": ("chameleon", "ChameleonForConditionalGeneration"),  # noqa: E501
     "DeepseekVLV2ForCausalLM": ("deepseek_vl2", "DeepseekVLV2ForCausalLM"),
     "FuyuForCausalLM": ("fuyu", "FuyuForCausalLM"),
