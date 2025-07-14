@@ -3213,3 +3213,8 @@ def has_deep_gemm() -> bool:
     """Whether the optional `deep_gemm` package is available."""
 
     return _has_module("deep_gemm")
+
+def has_flashinfer() -> bool:
+    """Whether the optional `flashinfer` package is available."""
+
+    return _has_module("flashinfer")
