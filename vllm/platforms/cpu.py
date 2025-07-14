@@ -365,4 +365,4 @@ class CpuPlatform(Platform):
 
     @classmethod
     def synchronize(cls):
-        torch.cpu.synchronize()
+        pass
