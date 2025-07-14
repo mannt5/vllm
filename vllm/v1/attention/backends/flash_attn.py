@@ -208,8 +208,9 @@ class FlashAttentionMetadataBuilder(
         self.aot_sliding_window: Optional[tuple[int, int]] = None
 
     def build(
-        self, common_prefix_len: int,
-        common_attn_metadata: CommonAttentionMetadata
+        self,
+        common_prefix_len: int,
+        common_attn_metadata: CommonAttentionMetadata,
     ) -> FlashAttentionMetadata:
         num_reqs = common_attn_metadata.num_reqs
         num_actual_tokens = common_attn_metadata.num_actual_tokens
@@ -217,6 +218,9 @@ class FlashAttentionMetadataBuilder(
 
         max_seq_len = int(self.runner.seq_lens_np[:num_reqs].max())
         query_start_loc = common_attn_metadata.query_start_loc
+        query_start_loc_np = common_attn_metadata.query_start_loc_np
+        if query_start_loc_np is None:
+            query_start_loc_np = self.runner.query_start_loc_np[:num_reqs + 1]
         seq_lens = common_attn_metadata.seq_lens
         block_table = self.block_table
         block_table_tensor = block_table.get_device_tensor()[:num_reqs]
@@ -271,7 +275,7 @@ class FlashAttentionMetadataBuilder(
             seqlens_q_local_np, virt_q_cu_seqlens_np, virt_k_seqlens_np, \
                 virt_block_table_tensor = make_local_attention_virtual_batches(
                     self.runner.attention_chunk_size,
-                    self.runner.query_start_loc_np[:num_reqs + 1],
+                    query_start_loc_np,
                     self.runner.seq_lens_np[:num_reqs],
                     block_table_tensor,
                     self.block_size,

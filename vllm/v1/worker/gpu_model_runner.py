@@ -27,8 +27,8 @@ from vllm.distributed.kv_transfer.kv_connector.v1 import KVConnectorBase_V1
 from vllm.distributed.parallel_state import (
     get_pp_group, get_tp_group, graph_capture, is_global_first_rank,
     prepare_communication_buffer_for_model)
-from vllm.forward_context import (DPMetadata, get_forward_context,
-                                  set_forward_context)
+from vllm.forward_context import (DPMetadata, TruncatedPrefillMetadata,
+                                  get_forward_context, set_forward_context)
 from vllm.logger import init_logger
 from vllm.model_executor.layers.mamba.mamba_mixer2 import MambaBase
 from vllm.model_executor.layers.rotary_embedding import MRotaryEmbedding
@@ -316,6 +316,12 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         # from the KV cache of `shared_kv_cache_layers[layer_name]`.
         self.shared_kv_cache_layers: dict[str, str] = {}
 
+        self.generation_indices = None
+        if self.cache_config.enable_kv_sharing_truncated_prefill:
+            self.generation_indices = torch.zeros(self.max_num_tokens,
+                                                  dtype=torch.int32,
+                                                  device=self.device)
+
     def _may_reorder_batch(self, scheduler_output: "SchedulerOutput") -> None:
         """
         Update the order of requests in the batch based on the attention
@@ -574,11 +580,79 @@ class GPUModelRunner(LoRAModelRunnerMixin):
 
         return cu_num_tokens, arange
 
+    def _truncate_prefill(self) -> bool:
+        if not self.cache_config.enable_kv_sharing_truncated_prefill:
+            return False
+
+        num_decode_reqs = 0
+        for req_index in range(self.input_batch.num_reqs):
+            if self.input_batch.num_computed_tokens_cpu[
+                    req_index] >= self.input_batch.num_prompt_tokens[
+                        req_index]:
+                num_decode_reqs += 1
+
+        if self.input_batch.num_reqs == num_decode_reqs:
+            # All requests on decode, no need to truncate prefill
+            return False
+
+        for kv_cache_group_spec in self.kv_cache_config.kv_cache_groups:
+            if kv_cache_group_spec.truncated_prefill_eligible_layers:
+                return True
+
+        return False
+
+    def _calc_truncated_prefill_attn_metadata(
+        self,
+        logits_indices: torch.Tensor,
+        common_attn_metadata: CommonAttentionMetadata,
+    ) -> CommonAttentionMetadata:
+        num_reqs = common_attn_metadata.num_reqs
+        query_start_loc = common_attn_metadata.query_start_loc
+        seq_lens = common_attn_metadata.seq_lens
+        # Example inputs
+        # num_reqs: 3
+        # generation_indices:  [14, 18, 19, 27]
+        # query_start_loc: [0, 15, 20, 28]
+        # seq_lens:        [41, 31, 40]
+
+        # Find how many decode indices belong to each request
+        # request_ids: [0, 1, 1, 2]
+        request_ids = torch.bucketize(logits_indices,
+                                      query_start_loc[1:],
+                                      right=True)
+
+        # Figure out how many tokens are in each request
+        # num_decode_tokens: [1, 2, 1]
+        num_decode_tokens = torch.bincount(request_ids, minlength=num_reqs)
+
+        # Calculate new query_start_loc with tokens in generation_indices
+        # decode_query_start_loc: [0, 1, 3, 4]
+        decode_query_start_loc = torch.empty(num_reqs + 1,
+                                             device=query_start_loc.device,
+                                             dtype=query_start_loc.dtype)
+
+        decode_query_start_loc[0] = 0
+        decode_query_start_loc[1:] = torch.cumsum(num_decode_tokens, dim=0)
+        decode_max_query_len = int(num_decode_tokens.max().item())
+        total_num_decode_tokens = int(num_decode_tokens.sum().item())
+
+        common_attn_metadata = CommonAttentionMetadata(
+            query_start_loc=decode_query_start_loc,
+            # TODO(sarckk): optimize
+            query_start_loc_np=decode_query_start_loc.cpu().numpy(),
+            seq_lens=seq_lens,
+            num_reqs=num_reqs,
+            num_actual_tokens=total_num_decode_tokens,
+            max_query_len=decode_max_query_len,
+        )
+        return common_attn_metadata
+
     def _prepare_inputs(
         self,
         scheduler_output: "SchedulerOutput",
-    ) -> tuple[dict[str, Any], bool, torch.Tensor,
-               Optional[SpecDecodeMetadata], np.ndarray]:
+    ) -> tuple[dict[str,
+                    Any], bool, torch.Tensor, Optional[SpecDecodeMetadata],
+               np.ndarray, Optional[TruncatedPrefillMetadata]]:
         """
         :return: tuple[
             attn_metadata: layer-to-attention_metadata mapping,
@@ -696,45 +770,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             self.query_start_loc_cpu[num_reqs].item())
 
         query_start_loc = self.query_start_loc[:num_reqs + 1]
+        query_start_loc_np = self.query_start_loc_np[:num_reqs + 1]
         seq_lens = self.seq_lens[:num_reqs]
-
-        common_attn_metadata = CommonAttentionMetadata(
-            query_start_loc=query_start_loc,
-            seq_lens=seq_lens,
-            num_reqs=num_reqs,
-            num_actual_tokens=total_num_scheduled_tokens,
-            max_query_len=max_num_scheduled_tokens,
-        )
-
-        attn_metadata: dict[str, Any] = {}
-        # Prepare the attention metadata for each KV cache group and make layers
-        # in the same group share the same metadata.
-        for kv_cache_group_id, kv_cache_group_spec in enumerate(
-                self.kv_cache_config.kv_cache_groups):
-
-            # Prepare for cascade attention if enabled & beneficial.
-            common_prefix_len = 0
-            builder = self.attn_metadata_builders[kv_cache_group_id]
-            if self.cascade_attn_enabled:
-                common_prefix_len = self._compute_cascade_attn_prefix_len(
-                    num_scheduled_tokens,
-                    scheduler_output.
-                    num_common_prefix_blocks[kv_cache_group_id],
-                    kv_cache_group_spec.kv_cache_spec,
-                    builder,
-                )
-
-            attn_metadata_i = (builder.build(
-                common_prefix_len=common_prefix_len,
-                common_attn_metadata=common_attn_metadata,
-            ))
-
-            for layer_name in kv_cache_group_spec.layer_names:
-                attn_metadata[layer_name] = attn_metadata_i
-
-        attention_cuda_graphs = all(
-            b.can_run_in_cudagraph(common_attn_metadata)
-            for b in self.attn_metadata_builders)
 
         use_spec_decode = len(
             scheduler_output.scheduled_spec_decode_tokens) > 0
@@ -760,12 +797,107 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 num_draft_tokens, cu_num_tokens)
             logits_indices = spec_decode_metadata.logits_indices
 
+        common_attn_metadata = CommonAttentionMetadata(
+            query_start_loc=query_start_loc,
+            query_start_loc_np=query_start_loc_np,
+            seq_lens=seq_lens,
+            num_reqs=num_reqs,
+            num_actual_tokens=total_num_scheduled_tokens,
+            max_query_len=max_num_scheduled_tokens,
+        )
+
+        truncate_prefill = self._truncate_prefill()
+        truncated_prefill_metadata = None
+        truncated_prefill_common_attn_metadata = None
+
+        if truncate_prefill:
+            assert self.generation_indices is not None
+            # TODO(sarckk): With chunked prefills, logits_indices contains
+            # indices for partial requests though we do not sample any token
+            # from these partial requests, for simplicity. In the future, we
+            # can calculate the 'true' decode indices based on logits_indices,
+            # hence the distinction from logits_indices
+            num_generation_indices = logits_indices.shape[0]
+            self.generation_indices[:num_generation_indices].copy_(
+                logits_indices)
+            # pad with last idx instead of zero
+            self.generation_indices[num_generation_indices:].fill_(
+                logits_indices[-1].item())
+            if (self.use_cuda_graph and num_generation_indices
+                    <= self.cudagraph_batch_sizes[-1]):
+                num_gen_indices_padded = self.vllm_config.pad_for_cudagraph(
+                    num_generation_indices)
+            else:
+                num_gen_indices_padded = num_generation_indices
+
+            truncated_prefill_metadata = TruncatedPrefillMetadata(
+                num_generation_indices=num_generation_indices,
+                generation_indices_padded=(
+                    self.generation_indices[:num_gen_indices_padded]))
+            truncated_prefill_common_attn_metadata =\
+                self._calc_truncated_prefill_attn_metadata(
+                    # Use generation indices without CUDA graph padding for attn
+                    truncated_prefill_metadata.generation_indices_unpadded(),
+                    common_attn_metadata,
+                )
+
+        attn_metadata: dict[str, Any] = {}
+        # Prepare the attention metadata for each KV cache group and make layers
+        # in the same group share the same metadata.
+        for kv_cache_group_id, kv_cache_group_spec in enumerate(
+                self.kv_cache_config.kv_cache_groups):
+
+            # Prepare for cascade attention if enabled & beneficial.
+            common_prefix_len = 0
+            builder = self.attn_metadata_builders[kv_cache_group_id]
+            if self.cascade_attn_enabled:
+                common_prefix_len = self._compute_cascade_attn_prefix_len(
+                    num_scheduled_tokens,
+                    scheduler_output.
+                    num_common_prefix_blocks[kv_cache_group_id],
+                    kv_cache_group_spec.kv_cache_spec,
+                    builder,
+                )
+
+            common_attn_metadata = common_attn_metadata
+            truncated_prefill_attn_metadata_i = None
+            if (truncated_prefill_common_attn_metadata is not None
+                    and kv_cache_group_spec.truncated_prefill_eligible_layers):
+                truncated_prefill_attn_metadata_i = (
+                    builder.build(
+                        # TODO(sarckk): Cascade attn for truncated prefill
+                        common_prefix_len=0,
+                        common_attn_metadata=(
+                            truncated_prefill_common_attn_metadata),
+                    ))
+
+            attn_metadata_i = (builder.build(
+                common_prefix_len=common_prefix_len,
+                common_attn_metadata=common_attn_metadata,
+            ))
+
+            for layer_name in kv_cache_group_spec.layer_names:
+                attn_metadata[layer_name] = attn_metadata_i
+
+            if (kv_cache_group_spec.truncated_prefill_eligible_layers
+                    is not None
+                    and truncated_prefill_attn_metadata_i is not None):
+                for layer_name in \
+                    kv_cache_group_spec.truncated_prefill_eligible_layers:
+                    attn_metadata[layer_name] =\
+                        truncated_prefill_attn_metadata_i
+
+        attention_cuda_graphs = all(
+            b.can_run_in_cudagraph(common_attn_metadata)
+            for b in self.attn_metadata_builders)
+
         # Hot-Swap lora model
         if self.lora_config:
             self.set_active_loras(self.input_batch, num_scheduled_tokens)
 
         return (attn_metadata, attention_cuda_graphs, logits_indices,
-                spec_decode_metadata, num_scheduled_tokens)
+                spec_decode_metadata, num_scheduled_tokens,
+                truncated_prefill_metadata)
 
     def _compute_cascade_attn_prefix_len(
         self,
@@ -1286,8 +1418,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
 
         # Prepare the decoder inputs.
         (attn_metadata, attention_cuda_graphs, logits_indices,
-         spec_decode_metadata,
-         num_scheduled_tokens_np) = (self._prepare_inputs(scheduler_output))
+         spec_decode_metadata, num_scheduled_tokens_np,
+         truncated_prefill_metadata) = (self._prepare_inputs(scheduler_output))
         num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
         if (self.use_cuda_graph
                 and num_scheduled_tokens <= self.cudagraph_batch_sizes[-1]):
@@ -1364,7 +1496,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 num_tokens=num_input_tokens,
                 num_tokens_across_dp=num_tokens_across_dp,
                 skip_cuda_graphs=skip_cuda_graphs,
-        ):
+                truncated_prefill_metadata=truncated_prefill_metadata):
             self.maybe_setup_kv_connector(scheduler_output)
 
             model_output = self.model(
@@ -1967,10 +2099,12 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                                         dtype=np.int32)
 
         attn_metadata: Optional[dict[str, Any]] = None
+
         if capture_attn_cudagraph:
             attn_metadata = {}
 
             query_start_loc = self.query_start_loc[:num_reqs + 1]
+            query_start_loc_np = self.query_start_loc_np[:num_reqs + 1]
             # Make sure max_model_len is used at the graph capture time.
             self.seq_lens_np[:num_reqs] = self.max_model_len
             self.seq_lens_np[num_reqs:] = 0
@@ -1980,6 +2114,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
 
             common_attn_metadata = CommonAttentionMetadata(
                 query_start_loc=query_start_loc,
+                query_start_loc_np=query_start_loc_np,
                 seq_lens=seq_lens,
                 num_reqs=num_reqs,
                 num_actual_tokens=num_tokens,
@@ -2550,7 +2685,10 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         # Setup `kv_cache_config` and `kv_caches` for models
         # with cross-layer KV sharing
         if self.shared_kv_cache_layers:
+            attn_layers = get_layers_from_vllm_config(self.vllm_config,
+                                                      Attention)
             initialize_kv_cache_for_kv_sharing(
+                list(attn_layers.keys()),
                 self.shared_kv_cache_layers,
                 kv_cache_config.kv_cache_groups,
                 kv_caches,
