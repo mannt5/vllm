@@ -23,21 +23,20 @@ from typing_extensions import TypeIs, deprecated
 
 import vllm.envs as envs
 from vllm.config import (BlockSize, CacheConfig, CacheDType, CompilationConfig,
-                         ConfigFormat, ConfigType, DecodingConfig,
-                         DetailedTraceModules, Device, DeviceConfig,
-                         DistributedExecutorBackend, GuidedDecodingBackend,
-                         GuidedDecodingBackendV1, HfOverrides, KVEventsConfig,
-                         KVTransferConfig, LoadConfig, LoadFormat, LoRAConfig,
-                         ModelConfig, ModelDType, ModelImpl, MultiModalConfig,
+                         ConfigFormat, ConfigType, DetailedTraceModules,
+                         Device, DeviceConfig, DistributedExecutorBackend,
+                         HfOverrides, KVEventsConfig, KVTransferConfig,
+                         LoadConfig, LoadFormat, LoRAConfig, ModelConfig,
+                         ModelDType, ModelImpl, MultiModalConfig,
                          ObservabilityConfig, ParallelConfig, PoolerConfig,
                          PrefixCachingHashAlgo, PromptAdapterConfig,
                          SchedulerConfig, SchedulerPolicy, SpeculativeConfig,
+                         StructuredOutputsBackendV1, StructuredOutputsConfig,
                          TaskOption, TokenizerMode, TokenizerPoolConfig,
                          VllmConfig, get_attr_docs, get_field)
 from vllm.logger import init_logger
 from vllm.platforms import CpuArchEnum, current_platform
 from vllm.plugins import load_general_plugins
-from vllm.reasoning import ReasoningParserManager
 from vllm.test_utils import MODEL_WEIGHTS_S3_BUCKET, MODELS_ON_S3
 from vllm.transformers_utils.utils import check_gguf_file
 from vllm.utils import (STR_DUAL_CHUNK_FLASH_ATTN_VAL, FlexibleArgumentParser,
@@ -429,13 +428,8 @@ class EngineArgs:
 
     disable_hybrid_kv_cache_manager: bool = (
         SchedulerConfig.disable_hybrid_kv_cache_manager)
-
-    guided_decoding_backend: GuidedDecodingBackend = DecodingConfig.backend
-    guided_decoding_disable_fallback: bool = DecodingConfig.disable_fallback
-    guided_decoding_disable_any_whitespace: bool = \
-        DecodingConfig.disable_any_whitespace
-    guided_decoding_disable_additional_properties: bool = \
-        DecodingConfig.disable_additional_properties
+    structured_outputs_config: StructuredOutputsConfig = get_field(
+        VllmConfig, "structured_outputs_config")
     logits_processor_pattern: Optional[
         str] = ModelConfig.logits_processor_pattern
 
@@ -475,8 +469,6 @@ class EngineArgs:
 
     additional_config: dict[str, Any] = \
         get_field(VllmConfig, "additional_config")
-    enable_reasoning: Optional[bool] = None  # DEPRECATED
-    reasoning_parser: str = DecodingConfig.reasoning_backend
 
     use_tqdm_on_load: bool = LoadConfig.use_tqdm_on_load
     pt_load_map_location: str = LoadConfig.pt_load_map_location
@@ -622,38 +614,6 @@ class EngineArgs:
         )
         load_group.add_argument('--pt-load-map-location',
                                 **load_kwargs["pt_load_map_location"])
-
-        # Guided decoding arguments
-        guided_decoding_kwargs = get_kwargs(DecodingConfig)
-        guided_decoding_group = parser.add_argument_group(
-            title="DecodingConfig",
-            description=DecodingConfig.__doc__,
-        )
-        guided_decoding_group.add_argument("--guided-decoding-backend",
-                                           **guided_decoding_kwargs["backend"])
-        guided_decoding_group.add_argument(
-            "--guided-decoding-disable-fallback",
-            **guided_decoding_kwargs["disable_fallback"])
-        guided_decoding_group.add_argument(
-            "--guided-decoding-disable-any-whitespace",
-            **guided_decoding_kwargs["disable_any_whitespace"])
-        guided_decoding_group.add_argument(
-            "--guided-decoding-disable-additional-properties",
-            **guided_decoding_kwargs["disable_additional_properties"])
-        guided_decoding_group.add_argument(
-            "--enable-reasoning",
-            action=argparse.BooleanOptionalAction,
-            deprecated=True,
-            help="[DEPRECATED] The `--enable-reasoning` flag is deprecated as "
-            "of v0.9.0. Use `--reasoning-parser` to specify the reasoning "
-            "parser backend instead. This flag (`--enable-reasoning`) will be "
-            "removed in v0.10.0. When `--reasoning-parser` is specified, "
-            "reasoning mode is automatically enabled.")
-        guided_decoding_group.add_argument(
-            "--reasoning-parser",
-            # This choices is a special case because it's not static
-            choices=list(ReasoningParserManager.reasoning_parsers),
-            **guided_decoding_kwargs["reasoning_backend"])
 
         # Parallel arguments
         parallel_kwargs = get_kwargs(ParallelConfig)
@@ -940,6 +900,8 @@ class EngineArgs:
                                 **vllm_kwargs["compilation_config"])
         vllm_group.add_argument("--additional-config",
                                 **vllm_kwargs["additional_config"])
+        vllm_group.add_argument('--structured-outputs-config',
+                                **vllm_kwargs["structured_outputs_config"])
 
         # Other arguments
         parser.add_argument('--use-v2-block-manager',
@@ -1341,15 +1303,6 @@ class EngineArgs:
             max_prompt_adapter_token=self.max_prompt_adapter_token) \
                                         if self.enable_prompt_adapter else None
 
-        decoding_config = DecodingConfig(
-            backend=self.guided_decoding_backend,
-            disable_fallback=self.guided_decoding_disable_fallback,
-            disable_any_whitespace=self.guided_decoding_disable_any_whitespace,
-            disable_additional_properties=\
-                self.guided_decoding_disable_additional_properties,
-            reasoning_backend=self.reasoning_parser
-        )
-
         observability_config = ObservabilityConfig(
             show_hidden_metrics_for_version=self.
             show_hidden_metrics_for_version,
@@ -1366,7 +1319,7 @@ class EngineArgs:
             lora_config=lora_config,
             speculative_config=speculative_config,
             load_config=load_config,
-            decoding_config=decoding_config,
+            structured_outputs_config=self.structured_outputs_config,
             observability_config=observability_config,
             prompt_adapter_config=prompt_adapter_config,
             compilation_config=self.compilation_config,
@@ -1416,12 +1369,13 @@ class EngineArgs:
                                recommend_to_remove=True)
             return False
 
-        if self.guided_decoding_backend not in get_args(
-                GuidedDecodingBackendV1):
+        if self.structured_outputs_config.backend \
+                not in get_args(StructuredOutputsBackendV1):
             _raise_or_fallback(
                 feature_name=
-                f"--guided-decoding-backend={self.guided_decoding_backend}",
-                recommend_to_remove=False)
+                f"""--structured_outputs_config '{{"backend": "{self.structured_outputs_config.backend}"}}'""",  # noqa: E501
+                recommend_to_remove=False,
+            )
             return False
 
         # Need at least Ampere for now (FA support required).

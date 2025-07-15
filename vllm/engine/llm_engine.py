@@ -17,9 +17,9 @@ import torch
 from typing_extensions import TypeVar
 
 import vllm.envs as envs
-from vllm.config import (DecodingConfig, LoRAConfig, ModelConfig,
-                         ObservabilityConfig, ParallelConfig, SchedulerConfig,
-                         VllmConfig)
+from vllm.config import (LoRAConfig, ModelConfig, ObservabilityConfig,
+                         ParallelConfig, SchedulerConfig,
+                         StructuredOutputsConfig, VllmConfig)
 from vllm.core.scheduler import ScheduledSequenceGroup, SchedulerOutputs
 from vllm.engine.arg_utils import EngineArgs
 from vllm.engine.metrics_types import StatLoggerBase, Stats
@@ -221,8 +221,8 @@ class LLMEngine:
         self.device_config = vllm_config.device_config
         self.speculative_config = vllm_config.speculative_config  # noqa
         self.load_config = vllm_config.load_config
-        self.decoding_config = vllm_config.decoding_config or DecodingConfig(  # noqa
-        )
+        self.structured_outputs_config = vllm_config.structured_outputs_config \
+                or StructuredOutputsConfig()
         self.prompt_adapter_config = vllm_config.prompt_adapter_config  # noqa
         self.observability_config = vllm_config.observability_config or ObservabilityConfig(  # noqa
         )
@@ -700,7 +700,7 @@ class LLMEngine:
                              "Priority scheduling is not enabled.")
 
         if isinstance(params, SamplingParams) \
-            and (params.guided_decoding or params.logits_processors) \
+            and (params.structured_outputs or params.logits_processors) \
             and self.scheduler_config.num_scheduler_steps > 1:
             raise ValueError(
                 "Guided decoding and logits processors are not supported "
@@ -839,10 +839,6 @@ class LLMEngine:
     def get_parallel_config(self) -> ParallelConfig:
         """Gets the parallel configuration."""
         return self.parallel_config
-
-    def get_decoding_config(self) -> DecodingConfig:
-        """Gets the decoding configuration."""
-        return self.decoding_config
 
     def get_scheduler_config(self) -> SchedulerConfig:
         """Gets the scheduler configuration."""
@@ -1248,7 +1244,7 @@ class LLMEngine:
         engine = LLMEngine.from_engine_args(engine_args)
         example_inputs = [(0, "What is LLM?",
         SamplingParams(temperature=0.0))]
-    
+
         # Start the engine with an event loop
         while True:
             if example_inputs:
@@ -2030,11 +2026,11 @@ class LLMEngine:
 
         logits_processors = []
 
-        if sampling_params.guided_decoding is not None:
+        if sampling_params.structured_outputs is not None:
             # Defensively copy sampling params since guided decoding logits
             # processors can have different state for each request
             sampling_params = copy.copy(sampling_params)
-            guided_decoding = sampling_params.guided_decoding
+            guided_decoding = sampling_params.structured_outputs
 
             logger.debug(
                 "Building guided decoding logits processor in "
@@ -2042,23 +2038,24 @@ class LLMEngine:
 
             tokenizer = self.get_tokenizer(lora_request=lora_request)
             guided_decoding.backend = guided_decoding.backend or \
-                self.decoding_config.backend
+                self.structured_outputs_config.backend
 
-            if self.decoding_config.reasoning_backend:
+            if self.structured_outputs_config.reasoning_backend:
                 logger.debug("Building with reasoning backend %s",
-                             self.decoding_config.reasoning_backend)
+                             self.structured_outputs_config.reasoning_backend)
 
             processor = get_local_guided_decoding_logits_processor(
                 guided_params=guided_decoding,
                 tokenizer=tokenizer,
                 model_config=self.model_config,
-                reasoning_backend=self.decoding_config.reasoning_backend,
+                reasoning_backend=self.structured_outputs_config.
+                reasoning_backend,
             )
             if processor:
                 logits_processors.append(processor)
 
             # Unset so this doesn't get passed down to the model
-            sampling_params.guided_decoding = None
+            sampling_params.structured_outputs = None
 
         if (sampling_params.logit_bias or sampling_params.allowed_token_ids):
             tokenizer = self.get_tokenizer(lora_request=lora_request)

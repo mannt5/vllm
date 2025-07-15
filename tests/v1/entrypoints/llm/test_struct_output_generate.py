@@ -14,14 +14,15 @@ import regex as re
 from pydantic import BaseModel
 
 from tests.reasoning.utils import run_reasoning_extraction
+from vllm.config import StructuredOutputsConfig
 from vllm.entrypoints.llm import LLM
 from vllm.outputs import RequestOutput
 from vllm.platforms import current_platform
 from vllm.reasoning.abs_reasoning_parsers import ReasoningParserManager
-from vllm.sampling_params import GuidedDecodingParams, SamplingParams
+from vllm.sampling_params import SamplingParams, StructuredOuputsParams
 
 if TYPE_CHECKING:
-    from vllm.config import TokenizerMode
+    from vllm.config import StructuredOutputsBackend, TokenizerMode
 
 NGRAM_SPEC_CONFIG = {
     "model": "[ngram]",
@@ -85,7 +86,7 @@ def _load_json(s: str, backend: str) -> str:
 
 @pytest.mark.skip_global_cleanup
 @pytest.mark.parametrize(
-    "model_name, guided_decoding_backend, tokenizer_mode, speculative_config",
+    "model_name, structured_outputs_backend, tokenizer_mode, speculative_config",
     PARAMS_MODELS_BACKENDS_TOKENIZER_MODE)
 def test_structured_output(
     monkeypatch: pytest.MonkeyPatch,
@@ -94,9 +95,9 @@ def test_structured_output(
     sample_sql_ebnf: str,
     sample_sql_lark: str,
     sample_regex: str,
-    sample_guided_choice: str,
-    guided_decoding_backend: str,
-    tokenizer_mode: str,
+    sample_choice: str,
+    structured_outputs_backend: StructuredOutputsBackend,
+    tokenizer_mode: TokenizerMode,
     model_name: str,
     speculative_config: dict[str, Any],
 ):
@@ -114,11 +115,14 @@ def test_structured_output(
         model=model_name,
         enforce_eager=enforce_eager,
         max_model_len=1024,
-        guided_decoding_backend=guided_decoding_backend,
-        guided_decoding_disable_any_whitespace=(guided_decoding_backend
-                                                in {"xgrammar", "guidance"}),
+        structured_outputs_config=StructuredOutputsConfig(
+            backend=structured_outputs_backend,
+            disable_any_whitespace=structured_outputs_backend
+            in {"xgrammar", "guidance"},
+        ),
         tokenizer_mode=tokenizer_mode,
-        speculative_config=speculative_config)
+        speculative_config=speculative_config,
+    )
 
     #
     # Test 1: Generate JSON output based on a provided schema
@@ -126,7 +130,7 @@ def test_structured_output(
     sampling_params = SamplingParams(
         temperature=1.0,
         max_tokens=4096,
-        guided_decoding=GuidedDecodingParams(json=sample_json_schema))
+        structured_outputs=StructuredOuputsParams(json=sample_json_schema))
     outputs = llm.generate(prompts=[
         (f"Give an example JSON for an employee profile that fits this "
          f"schema. Make the response as short as possible. Schema: "
@@ -152,12 +156,12 @@ def test_structured_output(
     #
     # Test 2: Generate JSON object without a schema
     #
-    if guided_decoding_backend != "outlines":
+    if structured_outputs_backend != "outlines":
         sampling_params = SamplingParams(
             temperature=1.0,
             max_tokens=4096,
             n=2,
-            guided_decoding=GuidedDecodingParams(json_object=True))
+            structured_outputs=StructuredOuputsParams(json_object=True))
 
         outputs = llm.generate(prompts=(
             "Generate a JSON object with curly braces for a person with "
@@ -183,11 +187,11 @@ def test_structured_output(
     #
     # Test 3: test a jsonschema incompatible with xgrammar
     #
-    sampling_params = SamplingParams(
-        temperature=1.0,
-        max_tokens=4096,
-        guided_decoding=GuidedDecodingParams(json=unsupported_json_schema))
-    if guided_decoding_backend.startswith("xgrammar"):
+    sampling_params = SamplingParams(temperature=1.0,
+                                     max_tokens=4096,
+                                     structured_outputs=StructuredOuputsParams(
+                                         json=unsupported_json_schema))
+    if structured_outputs_backend.startswith("xgrammar"):
         with pytest.raises(ValueError,
                            match="The provided JSON schema contains features "
                            "not supported by xgrammar."):
@@ -217,7 +221,7 @@ def test_structured_output(
             parsed_json = json.loads(generated_text)
             assert isinstance(parsed_json, dict)
 
-    if guided_decoding_backend != "outlines":
+    if structured_outputs_backend != "outlines":
         #
         # Test 4: Generate SQL statement using EBNF grammar
         #
@@ -225,7 +229,7 @@ def test_structured_output(
             temperature=0.8,
             top_p=0.95,
             max_tokens=1000,
-            guided_decoding=GuidedDecodingParams(grammar=sample_sql_ebnf))
+            structured_outputs=StructuredOuputsParams(grammar=sample_sql_ebnf))
         outputs = llm.generate(
             prompts=(
                 "Generate a sql statement that selects col_1 from "
@@ -259,7 +263,7 @@ def test_structured_output(
             temperature=0.8,
             top_p=0.95,
             max_tokens=1000,
-            guided_decoding=GuidedDecodingParams(grammar=sample_sql_lark))
+            structured_outputs=StructuredOuputsParams(grammar=sample_sql_lark))
         outputs = llm.generate(
             prompts=(
                 "Generate a sql statement that selects col_1 from "
@@ -298,7 +302,7 @@ def test_structured_output(
             temperature=0.8,
             top_p=0.95,
             max_tokens=1000,
-            guided_decoding=GuidedDecodingParams(grammar="not a grammar"))
+            structured_outputs=StructuredOuputsParams(grammar="not a grammar"))
         with pytest.raises(ValueError, match="Failed to convert the grammar "):
             llm.generate(
                 prompts=
@@ -315,7 +319,7 @@ def test_structured_output(
     sampling_params = SamplingParams(
         temperature=0.8,
         top_p=0.95,
-        guided_decoding=GuidedDecodingParams(regex=sample_regex))
+        structured_outputs=StructuredOuputsParams(regex=sample_regex))
     outputs = llm.generate(
         prompts=[
             (f"Give an example IPv4 address with this regex: {sample_regex}. "
@@ -342,7 +346,7 @@ def test_structured_output(
     sampling_params = SamplingParams(
         temperature=0.8,
         top_p=0.95,
-        guided_decoding=GuidedDecodingParams(choice=sample_guided_choice))
+        structured_outputs=StructuredOuputsParams(choice=sample_choice))
     outputs = llm.generate(
         prompts=("The best language for type-safe systems programming is "
                  "(Make the response as short as possible.) "),
@@ -356,7 +360,7 @@ def test_structured_output(
         generated_text = output.outputs[0].text
         print(generated_text)
         assert generated_text is not None
-        assert generated_text in sample_guided_choice
+        assert generated_text in sample_choice
         print(f"Prompt: {prompt!r}, Generated text: {generated_text!r}")
 
     #
@@ -366,7 +370,7 @@ def test_structured_output(
     sampling_params = SamplingParams(
         temperature=1.0,
         max_tokens=1000,
-        guided_decoding=GuidedDecodingParams(json=json_schema))
+        structured_outputs=StructuredOuputsParams(json=json_schema))
     outputs = llm.generate(prompts=(
         "Generate a JSON with the brand, model and car_type of the most "
         "iconic car from the 90's. Make the response as short as "
@@ -408,7 +412,7 @@ def test_structured_output(
     sampling_params = SamplingParams(
         temperature=1.0,
         max_tokens=4096,
-        guided_decoding=GuidedDecodingParams(json=json_schema))
+        structured_outputs=StructuredOuputsParams(json=json_schema))
 
     outputs = llm.generate(
         prompts=("Generate a description of a frog using 50 characters. "
@@ -429,7 +433,7 @@ def test_structured_output(
         output_json = json.loads(generated_text)
         jsonschema.validate(instance=output_json, schema=json_schema)
 
-    if guided_decoding_backend != "outlines":
+    if structured_outputs_backend != "outlines":
         #
         # Test 11: Generate structured output using structural_tag format
         #
@@ -455,7 +459,7 @@ def test_structured_output(
         sampling_params = SamplingParams(
             temperature=0.0,
             max_tokens=4096,
-            guided_decoding=GuidedDecodingParams(
+            structured_outputs=StructuredOuputsParams(
                 structural_tag=json.dumps(structural_tag_config)))
 
         prompt = """
@@ -532,7 +536,7 @@ Make the response as short as possible.
 
 @pytest.mark.skip_global_cleanup
 @pytest.mark.parametrize(
-    "model_name, guided_decoding_backend, tokenizer_mode, reasoning_parser, speculative_config",  # noqa: E501
+    "model_name, structured_outputs_backend, tokenizer_mode, reasoning_parser, speculative_config",  # noqa: E501
     [
         ("deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B", "xgrammar", "auto",
          "deepseek_r1", NGRAM_SPEC_CONFIG),
@@ -541,7 +545,7 @@ Make the response as short as possible.
 )
 def test_structured_output_with_reasoning_matrices(
     monkeypatch: pytest.MonkeyPatch,
-    guided_decoding_backend: str,
+    structured_outputs_backend: StructuredOutputsBackend,
     tokenizer_mode: TokenizerMode,
     reasoning_parser: str,
     model_name: str,
@@ -561,10 +565,12 @@ def test_structured_output_with_reasoning_matrices(
         enforce_eager=bool(not current_platform.is_tpu()),
         max_model_len=1024,
         max_num_seqs=16,
-        guided_decoding_backend=guided_decoding_backend,
-        guided_decoding_disable_any_whitespace=True,
+        structured_outputs_config=StructuredOutputsConfig(
+            backend=structured_outputs_backend,
+            disable_any_whitespace=True,
+            reasoning_parser=reasoning_parser,
+        ),
         tokenizer_mode=tokenizer_mode,
-        reasoning_parser=reasoning_parser,
         speculative_config=speculative_config,
     )
     tokenizer = llm.get_tokenizer(None)
@@ -588,7 +594,7 @@ def test_structured_output_with_reasoning_matrices(
     sampling_params = SamplingParams(
         temperature=0.1,
         max_tokens=8192,
-        guided_decoding=GuidedDecodingParams(json=reasoning_schema),
+        structured_outputs=StructuredOuputsParams(json=reasoning_schema),
     )
     outputs = llm.generate(
         [reasoning_prompt],
@@ -619,19 +625,23 @@ def test_structured_output_auto_mode(
     monkeypatch: pytest.MonkeyPatch,
     unsupported_json_schema: dict[str, Any],
     model_name: str,
-    tokenizer_mode: str,
+    tokenizer_mode: TokenizerMode,
 ):
     monkeypatch.setenv("VLLM_USE_V1", "1")
 
-    llm = LLM(model=model_name,
-              max_model_len=1024,
-              guided_decoding_backend="auto",
-              tokenizer_mode=tokenizer_mode)
+    llm = LLM(
+        model=model_name,
+        max_model_len=1024,
+        structured_outputs_config=StructuredOutputsConfig(backend="auto"),
+        tokenizer_mode=tokenizer_mode,
+    )
 
     sampling_params = SamplingParams(
         temperature=1.0,
         max_tokens=1000,
-        guided_decoding=GuidedDecodingParams(json=unsupported_json_schema))
+        structured_outputs=StructuredOuputsParams(
+            json=unsupported_json_schema),
+    )
 
     prompts = (
         "Give an example JSON object for a grade "
@@ -668,9 +678,11 @@ def test_guidance_no_additional_properties(monkeypatch: pytest.MonkeyPatch):
 
     llm = LLM(model="Qwen/Qwen2.5-1.5B-Instruct",
               max_model_len=1024,
-              guided_decoding_backend="guidance",
-              guided_decoding_disable_any_whitespace=True,
-              guided_decoding_disable_additional_properties=True)
+              structured_outputs_config=StructuredOutputsConfig(
+                  backend='guidance',
+                  disable_any_whitespace=True,
+                  disable_additional_properties=True,
+              ))
 
     schema = {
         'type': 'object',
@@ -696,14 +708,16 @@ def test_guidance_no_additional_properties(monkeypatch: pytest.MonkeyPatch):
         "<|im_end|>\n<|im_start|>assistant\n")
 
     def generate_with_backend(backend):
-        guided_params = GuidedDecodingParams(
+        structured_outputs_params = StructuredOuputsParams(
             json=schema,
             backend=backend,
             disable_any_whitespace=True,
             disable_additional_properties=True)
-        sampling_params = SamplingParams(temperature=0,
-                                         max_tokens=256,
-                                         guided_decoding=guided_params)
+        sampling_params = SamplingParams(
+            temperature=0,
+            max_tokens=256,
+            structured_outputs=structured_outputs_params,
+        )
 
         outputs = llm.generate(prompts=prompt, sampling_params=sampling_params)
         assert outputs is not None

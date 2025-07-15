@@ -11,8 +11,8 @@ from typing import (Any, AsyncGenerator, Callable, Dict, Iterable, List,
 from weakref import ReferenceType
 
 import vllm.envs as envs
-from vllm.config import (DecodingConfig, LoRAConfig, ModelConfig,
-                         ParallelConfig, SchedulerConfig, VllmConfig)
+from vllm.config import (LoRAConfig, ModelConfig, ParallelConfig,
+                         SchedulerConfig, VllmConfig)
 from vllm.core.scheduler import SchedulerOutputs
 from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.engine.async_timeout import asyncio_timeout
@@ -471,7 +471,7 @@ class _AsyncLLMEngine(LLMEngine):
         )
 
         if isinstance(params, SamplingParams) and \
-            params.guided_decoding is not None:
+            params.structured_outputs is not None:
             # Guided decoding has an async implementation for building logits
             # processors in a separate threadpool.
             # We want to invoke that here instead of using the blocking
@@ -479,8 +479,9 @@ class _AsyncLLMEngine(LLMEngine):
             params = await build_guided_decoding_logits_processor_async(
                 sampling_params=params,
                 tokenizer=await self.get_tokenizer_async(lora_request),
-                default_guided_backend=self.decoding_config.backend,
-                reasoning_backend=self.decoding_config.reasoning_backend,
+                default_guided_backend=self.structured_outputs_config.backend,
+                reasoning_backend=self.structured_outputs_config.
+                reasoning_backend,
                 model_config=self.model_config)
 
         self._add_processed_request(
@@ -514,13 +515,13 @@ async def build_guided_decoding_logits_processor_async(
     those fields and adds the constructed logits processors to the
     logits_processors field. Modifies sampling params in-place and returns
     the modified sampling params."""
-    if sampling_params.guided_decoding is None:
+    if sampling_params.structured_outputs is None:
         return sampling_params
 
     # Defensively copy sampling params since guided decoding logits
     # processors can have different state for each request
     sampling_params = copy.copy(sampling_params)
-    guided_decoding = sampling_params.guided_decoding
+    guided_decoding = sampling_params.structured_outputs
 
     logger.debug(
         "Building guided decoding logits processor. "
@@ -542,7 +543,7 @@ async def build_guided_decoding_logits_processor_async(
         sampling_params.logits_processors.append(processor)
 
     # Unset guided decoding params after constructing the lp from them
-    sampling_params.guided_decoding = None
+    sampling_params.structured_outputs = None
 
     return sampling_params
 
@@ -1033,7 +1034,7 @@ class AsyncLLMEngine(EngineClient):
         ```
         # Please refer to entrypoints/api_server.py for
         # the complete example.
-    
+
         # initialize the engine and the example input
         # note that engine_args here is AsyncEngineArgs instance
         engine = AsyncLLMEngine.from_engine_args(engine_args)
@@ -1041,13 +1042,13 @@ class AsyncLLMEngine(EngineClient):
             "input": "What is LLM?",
             "request_id": 0,
         }
-    
+
         # start the generation
         results_generator = engine.encode(
         example_input["input"],
         PoolingParams(),
         example_input["request_id"])
-    
+
         # get the results
         final_output = None
         async for request_output in results_generator:
@@ -1057,7 +1058,7 @@ class AsyncLLMEngine(EngineClient):
                 # Return or raise an error
                 ...
             final_output = request_output
-    
+
         # Process and return the final output
         ...
         ```
@@ -1118,10 +1119,6 @@ class AsyncLLMEngine(EngineClient):
     async def get_parallel_config(self) -> ParallelConfig:
         """Get the parallel configuration of the vLLM engine."""
         return self.engine.get_parallel_config()
-
-    async def get_decoding_config(self) -> DecodingConfig:
-        """Get the decoding configuration of the vLLM engine."""
-        return self.engine.get_decoding_config()
 
     async def get_scheduler_config(self) -> SchedulerConfig:
         """Get the scheduling configuration of the vLLM engine."""

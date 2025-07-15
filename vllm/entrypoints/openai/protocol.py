@@ -34,8 +34,8 @@ from vllm.entrypoints.score_utils import (ScoreContentPartParam,
                                           ScoreMultiModalParam)
 from vllm.logger import init_logger
 from vllm.pooling_params import PoolingParams
-from vllm.sampling_params import (BeamSearchParams, GuidedDecodingParams,
-                                  RequestOutputKind, SamplingParams)
+from vllm.sampling_params import (BeamSearchParams, RequestOutputKind,
+                                  SamplingParams, StructuredOuputsParams)
 from vllm.sequence import Logprob
 from vllm.utils import random_uuid, resolve_obj_by_qualname
 
@@ -316,11 +316,11 @@ class ResponsesRequest(OpenAIBaseModel):
                 "top_p", self._DEFAULT_SAMPLING_PARAMS["top_p"])
 
         # Structured output
-        guided_decoding = None
+        structured_outputs = None
         if self.text is not None and self.text.format is not None:
             response_format = self.text.format
             if response_format.type == "json_schema":
-                guided_decoding = GuidedDecodingParams.from_optional(
+                structured_outputs = StructuredOuputsParams.from_optional(
                     json=response_format.schema_)
             elif response_format.type == "json_object":
                 raise NotImplementedError("json_object is not supported")
@@ -333,7 +333,7 @@ class ResponsesRequest(OpenAIBaseModel):
             logprobs=self.top_logprobs,
             output_kind=(RequestOutputKind.DELTA
                          if self.stream else RequestOutputKind.FINAL_ONLY),
-            guided_decoding=guided_decoding,
+            structured_outputs=structured_outputs,
         )
 
     @model_validator(mode="before")
@@ -626,7 +626,7 @@ class ChatCompletionRequest(OpenAIBaseModel):
                 s_tag_obj = structural_tag.model_dump(by_alias=True)
                 self.structural_tag = json.dumps(s_tag_obj)
 
-        guided_decoding = GuidedDecodingParams.from_optional(
+        structured_outputs = StructuredOuputsParams.from_optional(
             json=self._get_guided_json_from_tool() or self.guided_json,
             regex=self.guided_regex,
             choice=self.guided_choice,
@@ -667,7 +667,7 @@ class ChatCompletionRequest(OpenAIBaseModel):
             truncate_prompt_tokens=self.truncate_prompt_tokens,
             output_kind=RequestOutputKind.DELTA if self.stream \
                 else RequestOutputKind.FINAL_ONLY,
-            guided_decoding=guided_decoding,
+            structured_outputs=structured_outputs,
             logit_bias=self.logit_bias,
             bad_words= self.bad_words,
             allowed_token_ids=self.allowed_token_ids,
@@ -1087,7 +1087,7 @@ class CompletionRequest(OpenAIBaseModel):
                 and self.response_format.type == "json_object"):
             guided_json_object = True
 
-        guided_decoding = GuidedDecodingParams.from_optional(
+        structured_outputs = StructuredOuputsParams.from_optional(
             json=self.guided_json,
             regex=self.guided_regex,
             choice=self.guided_choice,
@@ -1127,7 +1127,7 @@ class CompletionRequest(OpenAIBaseModel):
             truncate_prompt_tokens=self.truncate_prompt_tokens,
             output_kind=RequestOutputKind.DELTA if self.stream \
                 else RequestOutputKind.FINAL_ONLY,
-            guided_decoding=guided_decoding,
+            structured_outputs=structured_outputs,
             logit_bias=self.logit_bias,
             allowed_token_ids=self.allowed_token_ids,
             extra_args=extra_args or None,
@@ -1971,7 +1971,7 @@ class TranscriptionRequest(OpenAIBaseModel):
     """
 
     stream: Optional[bool] = False
-    """When set, it will enable output to be streamed in a similar fashion 
+    """When set, it will enable output to be streamed in a similar fashion
     as the Chat Completion endpoint.
     """
     # --8<-- [start:transcription-extra-params]
@@ -2233,9 +2233,9 @@ class TranslationRequest(OpenAIBaseModel):
     """
 
     stream: Optional[bool] = False
-    """Custom field not present in the original OpenAI definition. When set, 
+    """Custom field not present in the original OpenAI definition. When set,
     it will enable output to be streamed in a similar fashion as the Chat
-    Completion endpoint. 
+    Completion endpoint.
     """
     # Flattened stream option to simplify form data.
     stream_include_usage: Optional[bool] = False
