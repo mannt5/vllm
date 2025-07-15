@@ -85,9 +85,6 @@ class OpenAIServingChat(OpenAIServing):
         self.tool_parser = self._get_tool_parser(
             tool_parser_name=tool_parser, enable_auto_tools=enable_auto_tools)
 
-        self.expand_tools_even_if_tool_choice_none = (
-            expand_tools_even_if_tool_choice_none)
-
         self.enable_prompt_tokens_details = enable_prompt_tokens_details
         self.enable_force_include_usage = enable_force_include_usage
         self.default_sampling_params = (
