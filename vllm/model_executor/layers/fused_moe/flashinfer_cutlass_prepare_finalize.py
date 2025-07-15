@@ -3,12 +3,12 @@
 from typing import Optional, Tuple
 
 import torch
-from flashinfer.comm.trtllm_alltoall import MnnvlMoe as MnnvlMoe
-from flashinfer.comm.trtllm_alltoall import MoEAlltoallInfo as MoEAlltoallInfo
+# from flashinfer.comm.trtllm_alltoall import MnnvlMoe as MnnvlMoe
+# from flashinfer.comm.trtllm_alltoall import MoEAlltoallInfo as MoEAlltoallInfo
 
 import vllm.envs as envs
 import vllm.model_executor.layers.fused_moe.modular_kernel as mk
-from vllm.distributed import (get_dp_group, get_tp_group)
+from vllm.distributed import (get_dp_group, get_tp_group, get_ep_group)
 from vllm.forward_context import get_forward_context
 from vllm.model_executor.layers.fused_moe.config import FusedMoEQuantConfig
 from vllm.model_executor.layers.fused_moe.utils import (
@@ -16,11 +16,15 @@ from vllm.model_executor.layers.fused_moe.utils import (
 
 _alltoall_manager = None
 
-def get_local_sizes(local_tokens):
+def get_global_num_tokens_cpu():
     cu_sizes = get_forward_context().dp_metadata.cu_tokens_across_dp_cpu
     sizes = [cu_sizes[0].item()]
     for i in range(1, len(cu_sizes)):
         sizes.append((cu_sizes[i] - cu_sizes[i - 1]).item())
+    return sizes
+
+def get_local_sizes(local_tokens):
+    sizes = get_global_num_tokens_cpu()
     max_num_tokens = envs.VLLM_MOE_DP_CHUNK_SIZE
     sizes_chunked = [max_num_tokens] * len(sizes)
     if local_tokens < max_num_tokens:
@@ -51,9 +55,9 @@ class FlashInferCutlassMoEPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
         self.ep_rank = ep_rank
         self.ep_size = ep_size
 
-    @property
-    def alltoall_info(self) -> MoEAlltoallInfo:
-        return self.alltoall_info
+    # @property
+    # def alltoall_info(self) -> MoEAlltoallInfo:
+    #     return self.alltoall_info
 
     @property
     def activation_format(self) -> mk.FusedMoEActivationFormat:
@@ -104,14 +108,19 @@ class FlashInferCutlassMoEPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
         else:
             #TODO(shuw): make env var
             enable_flashinfer_fp4_allgather = True
-            enable_flashinfer_alltoall = False
+            enable_flashinfer_alltoall = True
 
             if enable_flashinfer_alltoall:
-                global_num_tokens_cpu = get_forward_context(
-                ).dp_metadata.cu_tokens_across_dp_cpu[-1]
+                global_num_tokens_cpu = get_global_num_tokens_cpu()
                 top_k = topk_ids.size(1)
-                x, topk_ids, topk_weights, alltoall_info = flashinfer_alltoall_dispatch(
-                    # TODO(shuw): need to consider chunking for global_num_tokens_cpu
+                all2all_manager = get_ep_group().device_communicator.all2all_manager
+                print("xxxx"*100)
+                print(all2all_manager)
+                print(f"ep_size:{self.ep_size}, {self.ep_rank}")
+                assert all2all_manager is not None
+                # TODO(shuw): need to consider chunking for global_num_tokens_cpu
+                x1, topk_ids1, topk_weights1, alltoall_info = all2all_manager.dispatch(
+                    get_dp_group().device_communicator,
                     global_num_tokens_cpu,
                     a1,
                     topk_ids,
@@ -138,14 +147,14 @@ class FlashInferCutlassMoEPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
                                             dim=0,
                                             sizes=get_local_sizes(local_tokens))
 
-            if enable_flashinfer_alltoall:
-                print("all2allcalling"*100)
-                a1q = MnnvlMoe.mnnvl_moe_alltoallv(a1q, self.alltoall_info,
-                                                   self.alltoall_workspace,
-                                                   self.ep_rank, self.ep_size)
-                a1q_scale = MnnvlMoe.mnnvl_moe_alltoallv(
-                    a1q_scale, alltoall_info, self.alltoall_workspace,
-                    self.ep_rank, self.ep_size)
+            # if enable_flashinfer_alltoall:
+            #     print("all2allcalling"*100)
+            #     a1q = MnnvlMoe.mnnvl_moe_alltoallv(a1q, self.alltoall_info,
+            #                                        self.alltoall_workspace,
+            #                                        self.ep_rank, self.ep_size)
+            #     a1q_scale = MnnvlMoe.mnnvl_moe_alltoallv(
+            #         a1q_scale, alltoall_info, self.alltoall_workspace,
+            #         self.ep_rank, self.ep_size)
 
             from flashinfer import fp4_swizzle_blockscale
             a1_m, a1_n = a1q.shape
@@ -175,91 +184,41 @@ class FlashInferCutlassMoEPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
                     sizes=get_local_sizes(local_tokens),
                 )
 
-            if enable_flashinfer_alltoall:
-                top_k = topk_ids.size(1)
-                token_count = fused_expert_output.shape[0]
-                _ = flashinfer_alltoall_combine(
-                    fused_expert_output,
-                    # TODO(shuw): need to consider chunking for global_num_tokens_cpu
-                    self.alltoall_info,
-                    ep_rank=self.ep_rank,
-                    ep_size=self.ep_size,
-                    top_k=top_k,
-                    token_count=token_count,
-                )
+            # if enable_flashinfer_alltoall:
+            #     top_k = topk_ids.size(1)
+            #     token_count = fused_expert_output.shape[0]
+            #     _ = flashinfer_alltoall_combine(
+            #         fused_expert_output,
+            #         # TODO(shuw): need to consider chunking for global_num_tokens_cpu
+            #         self.alltoall_info,
+            #         ep_rank=self.ep_rank,
+            #         ep_size=self.ep_size,
+            #         top_k=top_k,
+            #         token_count=token_count,
+            #     )
         output.copy_(fused_expert_output)
 
-def flashinfer_alltoall_dispatch(
-    global_num_tokens_cpu: list[int],
-    x: torch.Tensor,
-    topk_ids: torch.Tensor,
-    topk_weights: torch.Tensor,
-    top_k: int,
-    num_experts: int,
-    ep_rank: int,
-    ep_size: int,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, MoEAlltoallInfo]:
-    # TODO(shuw): add later
-    # assert (
-    #     ensure_alltoall_workspace_initialized()
-    # ), "FlashInfer AllToAll workspace not available"
-
-    # gather router info
-    # Assume same number of tokens across all devices if global_num_tokens_cpu is None
-    max_num_token = max(global_num_tokens_cpu
-                        ) if global_num_tokens_cpu is not None else x.shape[0]
-    topk_ids = torch.nn.functional.pad(
-        topk_ids, (0, 0, 0, max_num_token - topk_ids.shape[0]), "constant",
-        num_experts)
-    topk_weights = torch.nn.functional.pad(
-        topk_weights, (0, 0, 0, max_num_token - topk_weights.shape[0]))
-    gathered_topk_ids, gathered_topk_weights = (get_dp_group().all_gatherv(
-        [topk_ids, topk_weights]))
-    gathered_topk_ids = torch.flatten(gathered_topk_ids.contiguous(),
-                                      start_dim=0,
-                                      end_dim=-2)
-    gathered_topk_weights = torch.flatten(gathered_topk_weights.contiguous(),
-                                          start_dim=0,
-                                          end_dim=-2)
-    gathered_target_rank_ids = _flashinfer_mnnvlmoe.compute_target_rank_id(
-        gathered_topk_ids, num_experts, ep_size)
-    alltoall_info, topk_ids, topk_weights = (
-        _flashinfer_mnnvlmoe.mnnvl_moe_alltoallv_prepare(
-            gathered_target_rank_ids,
-            None,
-            gathered_topk_ids,
-            gathered_topk_weights,
-            max_num_token,
-            num_experts,
-            top_k,
-            ep_rank,
-            ep_size,
-        ))
-
-    x = _flashinfer_mnnvlmoe.mnnvl_moe_alltoallv(
-        x, alltoall_info, _alltoall_manager.workspace_tensor, ep_rank, ep_size)
-
-    return x, topk_ids, topk_weights, alltoall_info
 
 
-def flashinfer_alltoall_combine(
-    output: torch.Tensor,
-    alltoall_info: MoEAlltoallInfo,
-    top_k: int,
-    ep_rank: int,
-    ep_size: int,
-    token_count: int,
-):
-    # TODO(shuw): add later
-    # assert (
-    #     ensure_alltoall_workspace_initialized()
-    # ), "FlashInfer AllToAll workspace not available"
-    return _flashinfer_mnnvlmoe.mnnvl_moe_alltoallv_combine(
-        output,
-        alltoall_info,
-        _alltoall_manager.workspace_tensor,
-        ep_rank=ep_rank,
-        ep_size=ep_size,
-        top_k=top_k,
-        token_count=token_count,
-    )
+
+# def flashinfer_alltoall_combine(
+#     output: torch.Tensor,
+#     alltoall_info: MoEAlltoallInfo,
+#     top_k: int,
+#     ep_rank: int,
+#     ep_size: int,
+#     token_count: int,
+# ):
+#     # TODO(shuw): add later
+#     # assert (
+#     #     ensure_alltoall_workspace_initialized()
+#     # ), "FlashInfer AllToAll workspace not available"
+#     return _flashinfer_mnnvlmoe.mnnvl_moe_alltoallv_combine(
+#         output,
+#         alltoall_info,
+#         _alltoall_manager.workspace_tensor,
+#         ep_rank=ep_rank,
+#         ep_size=ep_size,
+#         top_k=top_k,
+#         token_count=token_count,
+#     )

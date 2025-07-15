@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Tuple
 
 import torch
 import torch.distributed as dist
@@ -10,6 +10,7 @@ from vllm.logger import init_logger
 from vllm.utils import has_deep_ep, has_pplx, has_flashinfer
 
 from .base_device_communicator import All2AllManagerBase, Cache
+
 
 logger = init_logger(__name__)
 
@@ -24,7 +25,9 @@ _flashinfer_comm = None
 try:
     from flashinfer import comm as _flashinfer_comm
     from flashinfer.comm import trtllm_alltoall as _flashinfer_all2all
+
     _flashinfer_mnnvlmoe = _flashinfer_all2all.MnnvlMoe
+    _flashinfer_moealltoallinfo = _flashinfer_all2all.MoEAlltoallInfo
 except ImportError:
     logger.warning("flashinfer.comm.trtllm_alltoall is not available")
 
@@ -285,13 +288,11 @@ class FlashInferAllToAllManager(All2AllManagerBase):
                 "Initialize for flashinfer All2All "
                 "rank=%d, world size=%d", self.rank, self.world_size)
         self.initialized = False
-        # self.initialize(
-        #     world_size=self.world_size,
-        #     rank=self.rank,
-        # )
+        self.initialize(
+            world_size=self.world_size,
+            rank=self.rank,
+        )
         
-
-
     def initialize(
         self,
         world_size: int,
@@ -330,8 +331,8 @@ class FlashInferAllToAllManager(All2AllManagerBase):
                 fabric_page_size=1 << 29,  # 512MB
                 allocation_granularity=0    # Auto-detect
             )
-        tp_config = get_vllm_mnnvl_config()
-        self.workspace_tensor = _flashinfer_mnnvlmoe.get_moe_workspaces(self.mapping, tp_config)
+        self.dp_config = get_vllm_mnnvl_config()
+        self.workspace_tensor = _flashinfer_mnnvlmoe.get_moe_workspaces(self.mapping, self.dp_config)
 
         self.world_size = world_size
         self.rank = rank
@@ -354,3 +355,61 @@ class FlashInferAllToAllManager(All2AllManagerBase):
                 self.workspace_tensor = None
                 self.mapping = None
                 self.initialized = False
+    
+    def dispatch(
+        self,
+        comm,
+        global_num_tokens_cpu: list[int],
+        x: torch.Tensor,
+        topk_ids: torch.Tensor,
+        topk_weights: torch.Tensor,
+        top_k: int,
+        num_experts: int,
+        ep_rank: int,
+        ep_size: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, _flashinfer_moealltoallinfo]:
+        # TODO(shuw): add later
+        # assert (
+        #     ensure_alltoall_workspace_initialized()
+        # ), "FlashInfer AllToAll workspace not available"
+
+        # gather router info
+        # Assume same number of tokens across all devices if global_num_tokens_cpu is None
+        max_num_token = max(global_num_tokens_cpu
+                            ) if global_num_tokens_cpu is not None else x.shape[0]
+        topk_ids = torch.nn.functional.pad(
+            topk_ids, (0, 0, 0, max_num_token - topk_ids.shape[0]), "constant",
+            num_experts)
+        topk_weights = torch.nn.functional.pad(
+            topk_weights, (0, 0, 0, max_num_token - topk_weights.shape[0]))
+        gathered_topk_ids, gathered_topk_weights = (comm.all_gatherv(
+            [topk_ids, topk_weights]))
+        gathered_topk_ids = torch.flatten(gathered_topk_ids.contiguous(),
+                                        start_dim=0,
+                                        end_dim=-2)
+        gathered_topk_weights = torch.flatten(gathered_topk_weights.contiguous(),
+                                            start_dim=0,
+                                            end_dim=-2)
+        # _flashinfer_all2all = comm.all2all_manager?
+        gathered_target_rank_ids = _flashinfer_mnnvlmoe.compute_target_rank_id(
+            gathered_topk_ids, num_experts, ep_size)
+        
+        alltoall_info, topk_ids, topk_weights = (
+            _flashinfer_mnnvlmoe.mnnvl_moe_alltoallv_prepare(
+                gathered_target_rank_ids,
+                None,
+                gathered_topk_ids,
+                gathered_topk_weights,
+                max_num_token,
+                num_experts,
+                top_k,
+                ep_rank,
+                ep_size,
+            ))
+
+        x = _flashinfer_mnnvlmoe.mnnvl_moe_alltoallv(
+            x, alltoall_info, self.workspace_tensor, ep_rank, ep_size)
+
+        return x, topk_ids, topk_weights, alltoall_info
+    
+    

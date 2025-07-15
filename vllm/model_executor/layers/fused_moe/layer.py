@@ -106,7 +106,11 @@ class FusedMoEMethodBase(QuantizeMethodBase):
 
         if moe.use_flashinfer_cutlass_kernels:
             prepare_finalize = FlashInferCutlassMoEPrepareAndFinalize(
-                quant_dtype=moe.quant_dtype, )
+                quant_dtype=moe.quant_dtype,
+                ep_rank=all2all_manager.rank,
+                ep_size=all2all_manager.world_size,
+                )
+            #TODO(shuw): use handle like other backends
         if moe.use_pplx_kernels:
             hidden_dim_bytes, hidden_scale_bytes = pplx_hidden_dim_scale_bytes(
                 moe.max_num_tokens,

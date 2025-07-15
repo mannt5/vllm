@@ -1,7 +1,7 @@
 # vllm_mnnvl_compat.py
 from vllm.distributed import (get_tensor_model_parallel_group,
                              get_pipeline_model_parallel_group,
-                             get_dp_group)
+                             get_dp_group, get_ep_group)
 import torch
 
 # class vLLMToMPIShim:
@@ -81,9 +81,10 @@ import torch
 #         return vLLMToMPIShim(group_type="tp")
 
 from flashinfer.comm.mnnvl import CommBackend as CommBackend
+# DP group for now
 class vLLMCommBackend(CommBackend):
     def __init__(self):
-        self._group = get_tensor_model_parallel_group()
+        self._group = get_dp_group()
     
     def Get_rank(self) -> int:
         return self._group.rank_in_group
@@ -93,44 +94,30 @@ class vLLMCommBackend(CommBackend):
     
     def allgather(self, data: int) -> list[int]:
         tensor = torch.tensor([data], device="cuda")
-        # gathered = tensor_model_parallel_all_gather(tensor)
-        print(f"hereallgather:{self._group}")
         gathered = self._group.all_gather(tensor)
         return gathered.cpu().tolist()#.cpu().tolist()
     
     def allgather_bytes(self, data: bytes):
-        # Step 1: Convert bytes to tensor
         local_tensor = torch.ByteTensor(list(data)).unsqueeze(0).to("cuda")  # or "cpu"
-
-        # # Step 2: Gather sizes of each data chunk from all ranks
-        # local_size = torch.IntTensor([len(local_tensor)]).to("cuda")
-        # world_size = self.Get_size()
-        # sizes = [torch.IntTensor([0]).to("cuda") for _ in range(world_size)]
-        # self._group.all_gather(sizes, local_size)
-
-        # # Step 3: Pad to max size (required for all_gather)
-        # max_size = max(s.item() for s in sizes)
-        # padded = torch.zeros(max_size, dtype=torch.uint8, device="cuda")
-        # padded[:len(local_tensor)] = local_tensor
-
-        # Step 4: All-gather the padded tensors
-        # gathered = [torch.empty(max_size, dtype=torch.uint8, device="cuda") for _ in range(world_size)]
-        # self._group.all_gather(gathered, padded)
-
-
-        # # Step 5: Trim and convert back to bytes
-        # results = [bytes(t[:s.item()].tolist()) for t, s in zip(gathered, sizes)]
-        # return results
-        print(f"before gather: {local_tensor.shape}")
         gathered = self._group.all_gather(local_tensor, dim=0)
-        print(f"what is gathered:{gathered}")
         result = [bytes(gathered[i].cpu().tolist()) for i in range(self.Get_size())]
-        # result = gathered.tolist()
-        # print(f"after to list:{result}")
-        # result = [bytes(i[0]) for i in result]
-        print(f"result: {result}")
         return result#
     
     def Split(self, color: int, key: int) -> 'vLLMCommBackend':
         # vLLM handles this automatically via its groups
         return self
+    
+
+        # def allgather_bytes(self, data: bytes):
+        # # Step 1: Convert bytes to tensor
+        # local_tensor = torch.ByteTensor(list(data)).unsqueeze(0).to("cuda")  # or "cpu"
+
+        # print(f"before gather: {local_tensor.shape}")
+        # gathered = self._group.all_gather(local_tensor, dim=0)
+        # print(f"what is gathered:{gathered}")
+        # result = [bytes(gathered[i].cpu().tolist()) for i in range(self.Get_size())]
+        # # result = gathered.tolist()
+        # # print(f"after to list:{result}")
+        # # result = [bytes(i[0]) for i in result]
+        # print(f"result: {result}")
+        # return result#

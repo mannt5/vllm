@@ -527,6 +527,7 @@ class ModelOptNvFp4FusedMoE(FusedMoEMethodBase):
         experts_kwargs["ep_size"] = moe_parallel_config.ep_size
         experts_kwargs["tp_rank"] = moe_parallel_config.tp_rank
         experts_kwargs["tp_size"] = moe_parallel_config.tp_size
+        print(f"at modelopt.py: ep_size:{moe_parallel_config.ep_size}, {moe_parallel_config.ep_rank}")
         prepare_finalize_kwargs = {
             "ep_rank": moe_parallel_config.ep_rank,
             "ep_size": moe_parallel_config.ep_size,
