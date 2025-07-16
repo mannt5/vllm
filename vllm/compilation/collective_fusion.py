@@ -354,6 +354,7 @@ class AllReduceRMSNormPattern(BasePattern):
                 residual=residual,
                 norm_out=rms_result,
                 quant_out=None,
+                scale_out=None,
                 rms_gamma=weight,
                 rms_eps=self.epsilon,
                 pattern_code=flashinfer_comm.AllReduceFusionPattern.
@@ -413,6 +414,7 @@ class AllReduceFusedAddRMSNormPattern(BasePattern):
                 residual=residual,
                 norm_out=None,
                 quant_out=None,
+                scale_out=None,
                 rms_gamma=weight,
                 rms_eps=self.epsilon,
                 pattern_code=flashinfer_comm.AllReduceFusionPattern.
@@ -483,6 +485,7 @@ class AllReduceFusedRMSNormStaticQuantFP8Pattern(BasePattern):
                 residual=residual,
                 norm_out=result_rms,
                 quant_out=quant_result,
+                scale_out=None,
                 rms_gamma=weight,
                 rms_eps=self.epsilon,
                 pattern_code=flashinfer_comm.AllReduceFusionPattern.
@@ -565,6 +568,7 @@ class AllReduceFusedAddRMSNormStaticQuantFP8Pattern(BasePattern):
                 residual=residual,
                 norm_out=None,
                 quant_out=quant_result,
+                scale_out=None,
                 rms_gamma=weight,
                 rms_eps=self.epsilon,
                 pattern_code=flashinfer_comm.AllReduceFusionPattern.
