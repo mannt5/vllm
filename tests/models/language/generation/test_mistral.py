@@ -48,12 +48,13 @@ TOOLS = [
                 "properties": {
                     "city": {
                         "type": "string",
-                        "description": "The city to find the weather for, e.g. 'San Francisco'",
+                        "description": "The city to find the weather for, e.g. "
+                        "'San Francisco'",
                     },
                     "state": {
                         "type": "string",
-                        "description": "the two-letter abbreviation for the state that the city is"
-                        " in, e.g. 'CA' which would mean 'California'",
+                        "description": "the two-letter abbreviation for the state that "
+                        "the city is in, e.g. 'CA' which would mean 'California'",
                     },
                     "unit": {
                         "type": "string",
