@@ -645,6 +645,7 @@ rich==13.9.4
     # via
     #   genai-perf
     #   mteb
+    #   schemathesis
     #   typer
 rouge-score==0.1.2
     # via lm-eval
@@ -668,7 +669,7 @@ safetensors==0.4.5
     #   peft
     #   timm
     #   transformers
-schemathesis==3.39.15
+schemathesis==4.0.9
     # via -r requirements/test.in
 scikit-learn==1.5.2
     # via
@@ -723,9 +724,7 @@ soxr==0.5.0.post1
 sqlitedict==2.1.0
     # via lm-eval
 starlette==0.46.2
-    # via
-    #   schemathesis
-    #   starlette-testclient
+    # via starlette-testclient
 starlette-testclient==0.4.1
     # via schemathesis
 statsmodels==0.14.4
@@ -759,8 +758,6 @@ tokenizers==0.21.1
     #   -r requirements/test.in
     #   transformers
 tomli==2.2.1
-    # via schemathesis
-tomli-w==1.2.0
     # via schemathesis
 torch==2.7.0+cu128
     # via
@@ -841,6 +838,7 @@ typing-extensions==4.12.2
     #   pydantic
     #   pydantic-core
     #   pydantic-extra-types
+    #   schemathesis
     #   torch
     #   typer
     #   typing-inspection
@@ -876,8 +874,6 @@ xxhash==3.5.0
     #   datasets
     #   evaluate
 yarl==1.17.1
-    # via
-    #   aiohttp
-    #   schemathesis
+    # via aiohttp
 zstandard==0.23.0
     # via lm-eval
