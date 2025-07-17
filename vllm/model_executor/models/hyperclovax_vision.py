@@ -5,7 +5,7 @@ import ast
 import sys
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
-from functools import cached_property, partial
+from functools import partial
 from itertools import chain
 from typing import Any, Literal, Optional, TypedDict, Union
 
@@ -32,7 +32,6 @@ from transformers.modeling_utils import no_init_weights
 from vllm.config import VllmConfig
 from vllm.inputs import InputProcessingContext
 from vllm.model_executor.layers.quantization import QuantizationConfig
-from vllm.model_executor.layers.sampler import SamplerOutput, get_sampler
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.multimodal import MULTIMODAL_REGISTRY
 from vllm.multimodal.inputs import (MultiModalDataDict, MultiModalFieldConfig,
@@ -210,7 +209,10 @@ class HCXVisionMultiModalProcessor(
                 ]  # batchify
             videos = mm_data.get("videos",
                                  None)  # list of video in single conversation
+
+            num_videos = 0
             if videos is not None:
+                num_videos = len(videos)
                 videos = [
                     videos,
                 ]  # batchify
@@ -225,8 +227,45 @@ class HCXVisionMultiModalProcessor(
             )  # mm-only
 
             for k, v in _processed_outputs.items():
-                if k.endswith("_images") and len(v) > 0:
+                if len(v) < 1:
+                    continue
+                elif k.endswith("_images"):
+                    # list of list of 4D tensor -> list of 4D tensor
                     _processed_outputs[k] = v[0]
+                elif k.endswith("_videos"):
+                    # list of list of 4D tensor -> list of 4D tensor
+                    v = v[0]
+                    if k == "pixel_values_videos":
+                        v = torch.cat(v, dim=0)
+                        _c, _w, _h = v.shape[-3:]
+                        v = v.reshape(num_videos, -1, _c, _w, _h)
+                        v = list(torch.unbind(v, dim=0))
+                    _processed_outputs[k] = v
+
+            if num_videos > 0:
+                _ratios = [
+                    len(_pixel_values) for _pixel_values in
+                    _processed_outputs["pixel_values_videos"]
+                ]
+                _num_per_videos = [
+                    int(_e / sum(_ratios) *
+                        len(_processed_outputs["vision_query_lengths_videos"]))
+                    for _e in _ratios
+                ]
+                _processed_outputs["vision_query_lengths_videos"] = [
+                    _processed_outputs["vision_query_lengths_videos"]
+                    [sum(_num_per_videos[:_i]):sum(_num_per_videos[:_i + 1])]
+                    for _i in range(0, num_videos)
+                ]
+
+            # if len(mm_data["videos"]) > 0:
+            #     print("## after")
+            #     print(len(mm_data["videos"]))
+            #     print(mm_data["videos"][0].shape)
+            #     print(len(_processed_outputs["pixel_values_videos"]))
+            #     print(len(_processed_outputs["pixel_values_videos"][0]))
+            #     print(_processed_outputs["pixel_values_videos"][0][0].shape)
+            #     print(_processed_outputs["vision_query_lengths_videos"])
             processed_outputs.update(_processed_outputs)
 
         return processed_outputs
@@ -622,13 +661,6 @@ class HCXVisionForCausalLM(nn.Module, SupportsMultiModal, SupportsPP):
         # use_sum_loss = bool(kwargs.pop("use_sum_loss", False))
         # self.reduction = self._init_reduction_type(use_sum_loss)
 
-    @cached_property
-    def sampler(self):
-        if hasattr(self.language_model, "sampler"):
-            return self.language_model.sampler
-
-        return get_sampler()
-
     @classmethod
     def get_placeholder_str(cls, modality: str, i: int) -> Optional[str]:
         if modality.startswith("image"):
@@ -669,10 +701,17 @@ class HCXVisionForCausalLM(nn.Module, SupportsMultiModal, SupportsPP):
                 multimodal_embeddings.append(_multimodal_embeddings_images)
 
         if kwargs.get("pixel_values_videos") is not None:
-            for _pixel_values_videos in kwargs["pixel_values_videos"]:
+            for _pixel_values_videos, _vision_query_lengths_videos in zip(
+                    kwargs["pixel_values_videos"],
+                    kwargs["vision_query_lengths_videos"]):
                 _len_pixel_values_videos = [
-                    len(pixel_value) for pixel_value in _pixel_values_videos
+                    len(_vision_query_lengths)
+                    for _vision_query_lengths in _vision_query_lengths_videos
                 ]
+                _c, _w, _h = _pixel_values_videos.shape[-3:]
+                _pixel_values_videos = _pixel_values_videos.reshape(
+                    sum(_len_pixel_values_videos), -1, _c, _w,
+                    _h).unsqueeze(dim=0)
                 _multimodal_embeddings_videos = self.forward_videos(
                     pixel_values_videos=_pixel_values_videos,
                     len_pixel_values_videos=_len_pixel_values_videos,
@@ -923,13 +962,6 @@ class HCXVisionForCausalLM(nn.Module, SupportsMultiModal, SupportsPP):
     ) -> Optional[torch.Tensor]:
         return self.language_model.compute_logits(hidden_states,
                                                   sampling_metadata)
-
-    def sample(
-        self,
-        logits: torch.Tensor,
-        sampling_metadata: SamplingMetadata,
-    ) -> Optional[SamplerOutput]:
-        return self.language_model.sample(logits, sampling_metadata)
 
     def load_weights(
         self,
