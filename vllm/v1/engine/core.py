@@ -73,6 +73,8 @@ class EngineCore:
 
         # Setup Model.
         self.model_executor = executor_class(vllm_config)
+        self.collective_rpc("register_intermediate_hooks", args=(vllm_config.il_config,))
+
         if executor_fail_callback is not None:
             self.model_executor.register_failure_callback(
                 executor_fail_callback)
@@ -215,6 +217,7 @@ class EngineCore:
 
     def execute_model(self, scheduler_output: SchedulerOutput):
         try:
+            # Execute the model
             return self.model_executor.execute_model(scheduler_output)
         except Exception as err:
             # We do not want to catch BaseException here since we're only
