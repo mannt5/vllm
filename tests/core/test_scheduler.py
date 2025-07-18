@@ -1109,8 +1109,9 @@ def test_remove_seq_from_computed_blocks_tracker():
         scheduler._add_seq_group_to_swapped(seq_group)
 
     scheduler._schedule_swapped(budget, curr_loras)
-    seq_id_to_num_tokens_computed = scheduler.block_manager._computed_blocks_tracker._seq_id_to_num_tokens_computed.get(
-        1
+    computed_blocks_tracker = scheduler.block_manager._computed_blocks_tracker
+    seq_id_to_num_tokens_computed = (
+        computed_blocks_tracker._seq_id_to_num_tokens_computed.get(1)
     )
     assert seq_id_to_num_tokens_computed is None
 
@@ -1139,15 +1140,17 @@ def test_remove_seq_from_computed_blocks_tracker():
         scheduler.add_seq_group(seq_group)
 
     scheduler._schedule_prefills(budget, curr_loras)
-    seq_id_to_num_tokens_computed = scheduler.block_manager._computed_blocks_tracker._seq_id_to_num_tokens_computed.get(
-        1
+    computed_blocks_tracker = scheduler.block_manager._computed_blocks_tracker
+    seq_id_to_num_tokens_computed = (
+        computed_blocks_tracker._seq_id_to_num_tokens_computed.get(1)
     )
     assert seq_id_to_num_tokens_computed is None
 
     # Priority preemption schedule
     scheduler._schedule_priority_preemption(budget)
-    seq_id_to_num_tokens_computed = scheduler.block_manager._computed_blocks_tracker._seq_id_to_num_tokens_computed.get(
-        1
+    computed_blocks_tracker = scheduler.block_manager._computed_blocks_tracker
+    seq_id_to_num_tokens_computed = (
+        computed_blocks_tracker._seq_id_to_num_tokens_computed.get(1)
     )
     assert seq_id_to_num_tokens_computed is None
 
@@ -1187,8 +1190,9 @@ def test_remove_seq_from_computed_blocks_tracker():
         scheduler.add_seq_group(seq_group)
 
     scheduler._schedule_default()
-    seq_id_to_num_tokens_computed = scheduler.block_manager._computed_blocks_tracker._seq_id_to_num_tokens_computed.get(
-        1
+    computed_blocks_tracker = scheduler.block_manager._computed_blocks_tracker
+    seq_id_to_num_tokens_computed = (
+        computed_blocks_tracker._seq_id_to_num_tokens_computed.get(1)
     )
     assert seq_id_to_num_tokens_computed is None
 
@@ -1223,8 +1227,9 @@ def test_remove_seq_from_computed_blocks_tracker():
         scheduler.add_seq_group(seq_group)
 
     scheduler._schedule_default()
-    seq_id_to_num_tokens_computed = scheduler.block_manager._computed_blocks_tracker._seq_id_to_num_tokens_computed.get(
-        2
+    computed_blocks_tracker = scheduler.block_manager._computed_blocks_tracker
+    seq_id_to_num_tokens_computed = (
+        computed_blocks_tracker._seq_id_to_num_tokens_computed.get(2)
     )
     assert seq_id_to_num_tokens_computed is None
 
@@ -1261,8 +1266,9 @@ def test_remove_seq_from_computed_blocks_tracker():
         scheduler.add_seq_group(seq_group)
 
     scheduler._schedule_default()
-    seq_id_to_num_tokens_computed = scheduler.block_manager._computed_blocks_tracker._seq_id_to_num_tokens_computed.get(
-        1
+    computed_blocks_tracker = scheduler.block_manager._computed_blocks_tracker
+    seq_id_to_num_tokens_computed = (
+        computed_blocks_tracker._seq_id_to_num_tokens_computed.get(1)
     )
     assert seq_id_to_num_tokens_computed is None
 
@@ -1289,8 +1295,9 @@ def test_remove_seq_from_computed_blocks_tracker():
     for _, seq_group in seq_and_seq_groups:
         scheduler.add_seq_group(seq_group)
     scheduler._schedule_default()
-    seq_id_to_num_tokens_computed = scheduler.block_manager._computed_blocks_tracker._seq_id_to_num_tokens_computed.get(
-        0
+    computed_blocks_tracker = scheduler.block_manager._computed_blocks_tracker
+    seq_id_to_num_tokens_computed = (
+        computed_blocks_tracker._seq_id_to_num_tokens_computed.get(0)
     )
     assert seq_id_to_num_tokens_computed is None
 
@@ -1323,8 +1330,9 @@ def test_remove_seq_from_computed_blocks_tracker():
         scheduler.add_seq_group(seq_group)
 
     scheduler._schedule_default()
-    seq_id_to_num_tokens_computed = scheduler.block_manager._computed_blocks_tracker._seq_id_to_num_tokens_computed.get(
-        0
+    computed_blocks_tracker = scheduler.block_manager._computed_blocks_tracker
+    seq_id_to_num_tokens_computed = (
+        computed_blocks_tracker._seq_id_to_num_tokens_computed.get(0)
     )
     assert seq_id_to_num_tokens_computed is None
 
@@ -1357,7 +1365,8 @@ def test_remove_seq_from_computed_blocks_tracker():
         scheduler.add_seq_group(seq_group)
 
     scheduler._schedule_default()
-    seq_id_to_num_tokens_computed = scheduler.block_manager._computed_blocks_tracker._seq_id_to_num_tokens_computed.get(
-        1
+    computed_blocks_tracker = scheduler.block_manager._computed_blocks_tracker
+    seq_id_to_num_tokens_computed = (
+        computed_blocks_tracker._seq_id_to_num_tokens_computed.get(1)
     )
     assert seq_id_to_num_tokens_computed is None
