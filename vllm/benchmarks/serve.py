@@ -133,8 +133,8 @@ async def get_request(
     assert burstiness > 0, (
         f"A positive burstiness factor is expected, but given {burstiness}.")
     # Convert to list to get length for ramp-up calculations
-    if isinstance(input_requests, Iterable) and not isinstance(
-            input_requests, list):
+    if isinstance(input_requests,
+                  Iterable) and not isinstance(input_requests, list):
         input_requests = list(input_requests)
 
     total_requests = len(input_requests)
@@ -144,12 +144,9 @@ async def get_request(
     request_rates = []
     delay_ts = []
     for request_index, request in enumerate(input_requests):
-        current_request_rate = _get_current_request_rate(ramp_up_strategy,
-                                                      ramp_up_start_rps,
-                                                      ramp_up_end_rps,
-                                                      request_index,
-                                                      total_requests,
-                                                      request_rate)
+        current_request_rate = _get_current_request_rate(
+            ramp_up_strategy, ramp_up_start_rps, ramp_up_end_rps,
+            request_index, total_requests, request_rate)
         request_rates.append(current_request_rate)
         if current_request_rate == float("inf"):
             delay_ts.append(0)
@@ -159,7 +156,7 @@ async def get_request(
             # Sample the request interval from the gamma distribution.
             # If burstiness is 1, it follows exponential distribution.
             delay_ts.append(np.random.gamma(shape=burstiness, scale=theta))
-    
+
     # Calculate the cumulative delay time from the first sent out requests.
     for i in range(1, len(delay_ts)):
         delay_ts[i] += delay_ts[i - 1]
@@ -169,11 +166,11 @@ async def get_request(
         # logic would re-scale delay time to ensure the final delay_ts
         # align with target_total_delay_s.
         #
-        # NOTE: If we simply accumulate the random delta values 
-        # from the gamma distribution, their sum would have 1-2% gap 
+        # NOTE: If we simply accumulate the random delta values
+        # from the gamma distribution, their sum would have 1-2% gap
         # from target_total_delay_s. The purpose of the following logic is to
-        # close the gap for stablizing the throughput data 
-        # from different random seeds. 
+        # close the gap for stablizing the throughput data
+        # from different random seeds.
         target_total_delay_s = total_requests / request_rate
         normalize_factor = target_total_delay_s / delay_ts[-1]
         delay_ts = [delay * normalize_factor for delay in delay_ts]
@@ -388,8 +385,8 @@ async def benchmark(
         if profile_output.success:
             print("Profiler started")
 
-    distribution = ("Poisson process" if burstiness == 1.0 
-                   else "Gamma distribution")
+    distribution = ("Poisson process"
+                    if burstiness == 1.0 else "Gamma distribution")
 
     if ramp_up_strategy is not None:
         print(f"Traffic ramp-up strategy: {ramp_up_strategy}.")
@@ -886,8 +883,7 @@ def add_cli_args(parser: argparse.ArgumentParser):
         help="The ramp-up strategy. This would be used to "
         "ramp up the request rate from initial RPS to final "
         "RPS rate (specified by --ramp-up-start-rps and "
-        "--ramp-up-end-rps.) over the duration of the benchmark."
-    )
+        "--ramp-up-end-rps.) over the duration of the benchmark.")
     parser.add_argument(
         "--ramp-up-start-rps",
         type=int,
@@ -915,13 +911,11 @@ def main(args: argparse.Namespace):
             raise ValueError(
                 "When using ramp-up, do not specify --request-rate. "
                 "The request rate will be controlled by ramp-up parameters. "
-                "Please remove the --request-rate argument."
-            )
+                "Please remove the --request-rate argument.")
         if args.ramp_up_start_rps is None or args.ramp_up_end_rps is None:
             raise ValueError(
                 "When using --ramp-up-strategy, both --ramp-up-start-rps and "
-                "--ramp-up-end-rps must be specified"
-            )
+                "--ramp-up-end-rps must be specified")
         if args.ramp_up_start_rps < 0 or args.ramp_up_end_rps < 0:
             raise ValueError("Ramp-up start and end RPS must be non-negative")
         if args.ramp_up_start_rps > args.ramp_up_end_rps:
@@ -1068,7 +1062,7 @@ def main(args: argparse.Namespace):
                                if args.max_concurrency is not None else "")
         label = label or endpoint_type
         if args.ramp_up_strategy is not None:
-            file_name = f"{label}-ramp-up-{args.ramp_up_strategy}-{args.ramp_up_start_rps}qps-{args.ramp_up_end_rps}qps{max_concurrency_str}-{base_model_id}-{current_dt}.json" # noqa
+            file_name = f"{label}-ramp-up-{args.ramp_up_strategy}-{args.ramp_up_start_rps}qps-{args.ramp_up_end_rps}qps{max_concurrency_str}-{base_model_id}-{current_dt}.json"  # noqa
         else:
             file_name = f"{label}-{args.request_rate}qps{max_concurrency_str}-{base_model_id}-{current_dt}.json"  # noqa
         if args.result_filename:
