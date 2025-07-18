@@ -1,16 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-from typing import Optional, Dict, Any
+from typing import Optional
 
 import torch
 import torch.nn as nn
 
-from vllm.config import VllmConfig
+from vllm.config import VllmConfig, IntermediateLoggingConfig
 from vllm.logger import init_logger
 from vllm.v1.kv_cache_interface import KVCacheSpec
-from vllm.v1.worker.intermediates_logging import IntermediatesLogger, register_intermediate_hooks
-from vllm.v1.worker.il_config import IntermediateLoggingConfig
+from vllm.v1.worker.intermediates_logging import register_intermediate_hooks
 from vllm.worker.worker_base import WorkerBase as WorkerBaseV0
 
 logger = init_logger(__name__)
@@ -76,48 +75,15 @@ class WorkerBase(WorkerBaseV0):
         
         Args:
             config: Configuration for intermediate logging. If provided, this takes precedence over kwargs.
-            **kwargs: Configuration parameters that can include:
-                - output_dir: Directory where to save the intermediate tensors.
-                - module_name_regex: Optional regex pattern to filter modules by name.
-                - log_step_ids: List of step IDs to log.
-                - max_tensor_size: Maximum number of elements in tensors to log (None = no limit).
-                - enabled: Whether logging is enabled.
         """
-        logger.info(f"register_intermediate_hooks called on worker {self.rank}")
-        logger.info(f"Config: {config}")
-        logger.info(f"Kwargs: {kwargs}")
-        
-        if self.model_runner is None:
-            logger.error("Could not register intermediate hooks: model_runner is None")
+        if self.model_runner is None or not hasattr(self.model_runner, "model") or self.model_runner.model is None:
+            logger.error("Could not register intermediate hooks: model_runner.model is not accessible")
             return
-            
-        if not hasattr(self.model_runner, "model"):
-            logger.error("Could not register intermediate hooks: model_runner has no 'model' attribute")
-            return
-            
-        model = self.model_runner.model
-        if model is None:
-            logger.error("Could not register intermediate hooks: model is None")
-            return
-            
-        # Log model information
-        logger.info(f"Model type: {type(model).__name__}")
-        logger.info(f"Model device: {next(model.parameters(), torch.tensor(0)).device}")
-        
-        # Create config from kwargs if not provided
-        if config is None:
-            logger.info("Creating config from kwargs")
-            config = IntermediateLoggingConfig.from_dict(kwargs)
-        
-        logger.info(f"Registering intermediate hooks for model with config: {config.to_dict()}")
-        
+        model = self.model_runner.model        
         try:
             # Register hooks
-            logger_instance = register_intermediate_hooks(model, config)
+            register_intermediate_hooks(model, config, **kwargs)
             # Store the logger instance for potential later hook removal
-            self._intermediates_logger = logger_instance
             logger.info("Successfully registered intermediate hooks")
         except Exception as e:
-            logger.error(f"Error registering intermediate hooks: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
+            logger.error(f"Error registering intermediate hooks", e)
