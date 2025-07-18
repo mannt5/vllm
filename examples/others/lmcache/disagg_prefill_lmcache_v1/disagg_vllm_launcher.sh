@@ -15,6 +15,11 @@ else
     MODEL=$2
 fi
 
+# set and align the same hash seed for prefillers and decoders when launching the
+# LMCache PD disagg because the prefillers and decoders in LMCache using the hash
+# seed from vllm for all chunk keys. The hash seed must be aligned so that the
+# decoders can indentify the kv cache stored by the prefillers and retrieve them.
+export PYTHONHASHSEED=123
 
 if [[ $1 == "prefiller" ]]; then
     # Prefiller listens on port 8100
