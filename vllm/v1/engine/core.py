@@ -73,6 +73,34 @@ class EngineCore:
 
         # Setup Model.
         self.model_executor = executor_class(vllm_config)
+
+        
+        # Hook the dumping logic
+        from vllm.v1.worker.il_config import IntermediateLoggingConfig
+        
+        # Create a configuration for intermediate logging
+        logger.info("Setting up intermediate tensor logging")
+        
+        # Define the regex patterns to match module names
+        # These patterns will match any module with "layers.0" or "embed_tokens" in its name
+        module_patterns = ["layers\\.0", "embed_tokens"]
+        logger.info(f"Using module name regex patterns: {module_patterns}")
+        
+        il_config = IntermediateLoggingConfig(
+            output_dir="/tmp/vllm_intermediates",  # Directory to save intermediates
+            module_name_regex=module_patterns,     # Log layer 0 and embedding modules
+            log_step_ids=[0, 1, 2, 3, 4, 5],       # Log steps 0-5
+            max_tensor_size=1000000,               # Limit to 1M elements
+            enabled=True                           # Enable logging
+        )
+        
+        logger.info(f"Intermediate logging config: {il_config.to_dict()}")
+        
+        # Register hooks for intermediate tensor logging
+        logger.info("Calling register_intermediate_hooks via collective_rpc")
+        self.collective_rpc("register_intermediate_hooks", args=(il_config,))
+        logger.info("Finished setting up intermediate tensor logging")
+
         if executor_fail_callback is not None:
             self.model_executor.register_failure_callback(
                 executor_fail_callback)
@@ -215,7 +243,19 @@ class EngineCore:
 
     def execute_model(self, scheduler_output: SchedulerOutput):
         try:
-            return self.model_executor.execute_model(scheduler_output)
+            # Increment the step counter for intermediate logging
+            try:
+                from vllm.v1.worker.intermediates_logging import increment_step
+                logger.info("Incrementing intermediate logging step counter before model execution")
+                increment_step()
+            except Exception as e:
+                logger.warning(f"Failed to increment intermediate logging step counter: {e}")
+            
+            # Execute the model
+            result = self.model_executor.execute_model(scheduler_output)
+            
+            logger.info(f"Model execution completed for step with {scheduler_output.total_num_scheduled_tokens} tokens")
+            return result
         except Exception as err:
             # We do not want to catch BaseException here since we're only
             # interested in dumping info when the exception is due to an

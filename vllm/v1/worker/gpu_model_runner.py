@@ -68,6 +68,9 @@ from .utils import (bind_kv_cache, gather_mm_placeholders,
                     initialize_kv_cache_for_kv_sharing,
                     sanity_check_mm_encoder_outputs, scatter_mm_placeholders)
 
+from vllm.v1.worker.intermediates_logging import (
+    disable_intermediate_logging_decorator
+)
 if TYPE_CHECKING:
     import xgrammar as xgr
     import xgrammar.kernels.apply_token_bitmask_inplace_torch_compile as xgr_torch_compile  # noqa: E501
@@ -2152,7 +2155,19 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 raise e
         return pooler_output
 
+    @torch.inference_mode()
+    @disable_intermediate_logging_decorator
     def profile_run(self) -> None:
+        """Run a profile of the model with dummy inputs.
+        
+        This method is decorated with disable_intermediate_logging_decorator to automatically
+        disable intermediate tensor logging during profiling to avoid overhead.
+        """
+        # The decorator automatically disables intermediate logging
+        self._run_profile_internal()
+        torch._dynamo.config.guard_nn_modules = True
+    
+    def _run_profile_internal(self) -> None:
         # Profile with multimodal encoder & encoder cache.
         # TODO: handle encoder-decoder models once we support them.
         if (self.is_multimodal_model and self.max_num_encoder_input_tokens > 0
