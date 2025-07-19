@@ -43,9 +43,6 @@ from vllm.v1.request import Request, RequestStatus
 from vllm.v1.serial_utils import MsgpackDecoder, MsgpackEncoder
 from vllm.v1.structured_output import StructuredOutputManager
 from vllm.version import __version__ as VLLM_VERSION
-from vllm.v1.worker.intermediates_logging import (
-    intermediate_logging
-)
 
 logger = init_logger(__name__)
 
@@ -221,8 +218,7 @@ class EngineCore:
     def execute_model(self, scheduler_output: SchedulerOutput):
         try:
             # Execute the model
-            with intermediate_logging(self.vllm_config.il_config):
-                return self.model_executor.execute_model(scheduler_output)
+            return self.model_executor.execute_model(scheduler_output)
         except Exception as err:
             # We do not want to catch BaseException here since we're only
             # interested in dumping info when the exception is due to an

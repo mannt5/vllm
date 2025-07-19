@@ -79,10 +79,12 @@ class WorkerBase(WorkerBaseV0):
         if self.model_runner is None or not hasattr(self.model_runner, "model") or self.model_runner.model is None:
             logger.error("Could not register intermediate hooks: model_runner.model is not accessible")
             return
-        model = self.model_runner.model        
+        model = self.model_runner.model
         try:
             # Register hooks
             register_intermediate_hooks(model, config, **kwargs)
             # Store the logger instance for potential later hook removal
+        except Exception as e:
             logger.info("Successfully registered intermediate hooks")
             logger.error("Error registering intermediate hooks", exc_info=True)
+        

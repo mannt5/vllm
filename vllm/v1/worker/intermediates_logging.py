@@ -5,16 +5,17 @@ This module provides functionality to capture and save intermediate tensors
 (inputs and outputs) from PyTorch modules during forward passes.
 """
 
-import os
 import json
-import torch
+import os
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Tuple, Optional
+from typing import Any, Optional, Tuple
 
+import torch
+
+from vllm.config import IntermediateLoggingConfig
 # Import logger from vllm
 from vllm.logger import init_logger
-from vllm.config import IntermediateLoggingConfig
 
 logger = init_logger(__name__)
 
@@ -23,10 +24,11 @@ _CURRENT_STEP = 0
 
 _CURRENT_STEP_MODULE_CALLS: dict[str, int] = {}
 
-IL_MODULE_NAME="_il_module_name"
-IL_MODULE_CALL_IDX="_il_module_call_idx"
+IL_MODULE_NAME = "_il_module_name"
+IL_MODULE_CALL_IDX = "_il_module_call_idx"
 
 # Utility functions for intermediate logging
+
 
 def should_log_step(config):
     """Check if the current step should be logged based on the step IDs.
@@ -39,14 +41,15 @@ def should_log_step(config):
     """
     if not is_log_enabled(config):
         return False
-    
+
     # If log_step_ids is empty, log all steps
     if not config.log_step_ids:
         return True
-        
+
     # Otherwise, check if current step is in the set of step IDs to log
     return get_step() in config._step_id_set
-    
+
+
 def should_log_device(config, device_name):
     """Check if a device should be logged based on the device names.
     
@@ -63,9 +66,10 @@ def should_log_device(config, device_name):
     # If device_names is empty, log all devices
     if not config.device_names:
         return True
-        
+
     # Otherwise, check if device_name is in the list of device names to log
     return device_name in config.device_names
+
 
 def should_log_module(config, module_name, module) -> bool:
     """Check if a module should be logged based on the name regex patterns.
@@ -87,12 +91,14 @@ def should_log_module(config, module_name, module) -> bool:
         set_il_module_name(module, module_name)
         set_il_module_call_idx(module, -1)
         return True
-    
+
     # Check if the module name matches any of the patterns
     for pattern, call_idx in config._compiled_module_calls.items():
         match = pattern.search(module_name)
-        if match:  
-            logger.debug(f"Module {module_name}, {module.__class__.__name__} matches pattern: '{pattern.pattern}', {call_idx=}")
+        if match:
+            logger.debug(
+                f"Module {module_name}, {module.__class__.__name__} matches pattern: '{pattern.pattern}', {call_idx=}"
+            )
             set_il_module_name(module, module_name)
             set_il_module_call_idx(module, call_idx)
             return True
@@ -108,19 +114,25 @@ def is_log_enabled(config):
         return False
     return True
 
+
 def get_il_module_name(module: torch.nn.Module) -> str:
     return getattr(module, IL_MODULE_NAME, module.__class__.__name__)
+
 
 def get_il_module_call_idx(module: torch.nn.Module) -> int:
     return getattr(module, IL_MODULE_CALL_IDX, -1)
 
+
 def set_il_module_name(module: torch.nn.Module, name: str) -> None:
     setattr(module, IL_MODULE_NAME, name)
+
 
 def set_il_module_call_idx(module: torch.nn.Module, idx: int) -> None:
     setattr(module, IL_MODULE_CALL_IDX, idx)
 
+
 _global_config: Optional[IntermediateLoggingConfig] = None
+
 
 @contextmanager
 def intermediate_logging(config: Optional[IntermediateLoggingConfig]):
@@ -140,6 +152,7 @@ def intermediate_logging(config: Optional[IntermediateLoggingConfig]):
 def get_current_il_config():
     return _global_config
 
+
 def dump_intermediates_to_json(intermediates: Any, path: Path) -> Any:
     try:
         # Convert inputs to JSON-serializable format
@@ -151,6 +164,7 @@ def dump_intermediates_to_json(intermediates: Any, path: Path) -> Any:
         logger.warning(f"Failed to save intermediates as JSON: {e}")
         import traceback
         logger.warning(traceback.format_exc())
+
 
 def convert_intermediates_to_json(tensor: Any) -> Any:
     """Convert a intermediates(including tensor) to a JSON-serializable representation.
@@ -171,7 +185,7 @@ def convert_intermediates_to_json(tensor: Any) -> Any:
                 "device": str(tensor.device),
                 "numel": tensor.numel()
             }
-            
+
             # Include a sample of values if the tensor is not too large
             if tensor.numel() <= 100:
                 try:
@@ -194,24 +208,28 @@ def convert_intermediates_to_json(tensor: Any) -> Any:
                         result["values_sample"] = sample_values
                     else:
                         result["values_sample"] = str(sample_values)
-                    
+
                     # Add statistics
                     try:
+                        result["values_min"] = float(tensor_cpu.min().item(
+                        )) if tensor_cpu.numel() > 0 else None
                     except Exception:
                         result["values_min"] = "error"
-                        
+
                     try:
-                        result["values_max"] = float(tensor_cpu.max().item()) if tensor_cpu.numel() > 0 else None
+                        result["values_max"] = float(tensor_cpu.max().item(
+                        )) if tensor_cpu.numel() > 0 else None
                     except:
                         result["values_max"] = "error"
-                        
+
                     try:
-                        result["values_mean"] = float(tensor_cpu.mean().item()) if tensor_cpu.numel() > 0 else None
+                        result["values_mean"] = float(tensor_cpu.mean().item(
+                        )) if tensor_cpu.numel() > 0 else None
                     except:
                         result["values_mean"] = "error"
                 except Exception as e:
                     result["values_error"] = str(e)
-                    
+
             return result
         except Exception as e:
             # Handle any errors in tensor conversion
@@ -220,25 +238,30 @@ def convert_intermediates_to_json(tensor: Any) -> Any:
                 "error": str(e),
                 "tensor_type": str(type(tensor))
             }
-    
+
     elif isinstance(tensor, (list, tuple)):
         # For lists/tuples, recursively convert each element
         container_type = "list" if isinstance(tensor, list) else "tuple"
-        
+
         # If it's a large list, only include a sample
         if len(tensor) > 100:
             return {
-                "type": container_type,
-                "length": len(tensor),
-                "sample": [convert_intermediates_to_json(item) for item in tensor[:100]],
-                "note": f"Showing only first 100 of {len(tensor)} items"
+                "type":
+                container_type,
+                "length":
+                len(tensor),
+                "sample":
+                [convert_intermediates_to_json(item) for item in tensor[:100]],
+                "note":
+                f"Showing only first 100 of {len(tensor)} items"
             }
         else:
             return {
                 "type": container_type,
-                "items": [convert_intermediates_to_json(item) for item in tensor]
+                "items":
+                [convert_intermediates_to_json(item) for item in tensor]
             }
-    
+
     elif isinstance(tensor, dict):
         # For dictionaries, recursively convert each value
         if len(tensor) > 100:
@@ -249,30 +272,35 @@ def convert_intermediates_to_json(tensor: Any) -> Any:
                 "type": "dict",
                 "length": len(tensor),
                 "keys": keys,
-                "sample": {k: convert_intermediates_to_json(tensor[k]) for k in sample_keys},
+                "sample": {
+                    k: convert_intermediates_to_json(tensor[k])
+                    for k in sample_keys
+                },
                 "note": f"Showing only first 100 of {len(tensor)} items"
             }
         else:
             return {
                 "type": "dict",
-                "items": {k: convert_intermediates_to_json(v) for k, v in tensor.items()}
+                "items": {
+                    k: convert_intermediates_to_json(v)
+                    for k, v in tensor.items()
+                }
             }
-    
+
     elif tensor is None:
         return None
-    
+
     elif isinstance(tensor, (int, float, bool, str)):
         # Primitive types can be directly serialized
         return tensor
-    
+
     else:
         # For other types, use string representation
-        return {
-            "type": str(type(tensor).__name__),
-            "string_repr": str(tensor)
-        }
+        return {"type": str(type(tensor).__name__), "string_repr": str(tensor)}
 
-def save_tensors_metadata_if_too_large(tensor: torch.Tensor, file_path: str) -> bool:
+
+def save_tensors_metadata_if_too_large(tensor: torch.Tensor,
+                                       file_path: str) -> bool:
     """Utility function to dump tensor metadata to a file.
     
     Args:
@@ -282,20 +310,27 @@ def save_tensors_metadata_if_too_large(tensor: torch.Tensor, file_path: str) -> 
     il_config = get_current_il_config()
     if il_config is None:
         return False
-    if il_config.max_tensor_size is not None and tensor.numel() > il_config.max_tensor_size:
+    if il_config.max_tensor_size is not None and tensor.numel(
+    ) > il_config.max_tensor_size:
         # Save tensor metadata instead of full tensor
         tensor_info = {
-            "shape": list(tensor.shape),
-            "dtype": str(tensor.dtype),
-            "device": str(tensor.device),
-            "numel": tensor.numel(),
-            "skipped": f"Tensor size {tensor.numel()} exceeds max_tensor_size {il_config.max_tensor_size}"
+            "shape":
+            list(tensor.shape),
+            "dtype":
+            str(tensor.dtype),
+            "device":
+            str(tensor.device),
+            "numel":
+            tensor.numel(),
+            "skipped":
+            f"Tensor size {tensor.numel()} exceeds max_tensor_size {il_config.max_tensor_size}"
         }
         os.makedirs(os.path.dirname(f"{file_path}.json"), exist_ok=True)
-        with open (f"{file_path}.json", "w") as f:
+        with open(f"{file_path}.json", "w") as f:
             json.dump(tensor_info, f, indent=2)
         return True
     return False
+
 
 def save_tensors(tensor: Any, file_path: str) -> None:
     """Utility function to dump tensor to a file.
@@ -315,7 +350,9 @@ def save_tensors(tensor: Any, file_path: str) -> None:
         # Skip if device filtering is enabled and this device should not be logged
         il_config = get_current_il_config()
         if not should_log_device(il_config, device_name):
-            logger.debug(f"Skipping tensor on device {device_name} due to device filter")
+            logger.debug(
+                f"Skipping tensor on device {device_name} due to device filter"
+            )
             return
         # Append device name to file path
         pt_path = f"{file_path}_{device_name.replace(':', '_')}.pt"
@@ -325,9 +362,9 @@ def save_tensors(tensor: Any, file_path: str) -> None:
             logger.debug(f"Saved tensor of shape {tensor.shape} to {pt_path}")
         except Exception as e:
             logger.warning(f"Failed to save tensor to {pt_path}: {e}")
-        
+
         return
-    
+
     if isinstance(tensor, (list, tuple)):
         # For collections, also save each item individually
         for i, item in enumerate(tensor):
@@ -339,9 +376,9 @@ def save_tensors(tensor: Any, file_path: str) -> None:
             save_tensors(v, f"{file_path}_{k}")
         return
 
-def step_fwd(module: torch.nn.Module, 
-                 inputs: Tuple[Any, ...], 
-                 outputs: Any) -> None:
+
+def step_fwd(module: torch.nn.Module, inputs: Tuple[Any, ...],
+             outputs: Any) -> None:
     """Hook to increment the global step counter after a forward pass.
     
     Args:
@@ -354,34 +391,37 @@ def step_fwd(module: torch.nn.Module,
     # Increment the global step counter
     increment_step()
     global _CURRENT_STEP_MODULE_CALLS
-    logger.debug(f"Intermediate logging step incremented to {get_step()}, module calls get reset")
+    logger.debug(
+        f"Intermediate logging step incremented to {get_step()}, module calls get reset"
+    )
     _CURRENT_STEP_MODULE_CALLS = {}
 
 
-def _prepare_module_log_dir(
-                il_config: IntermediateLoggingConfig, 
-                module_name: str) -> Path:
+def _prepare_module_log_dir(il_config: IntermediateLoggingConfig,
+                            module_name: str) -> Path:
 
     # Create a unique directory for this step if not
     dump_dir = Path(il_config.output_run_dir) / f"step_{get_step()}"
     dump_dir.mkdir(exist_ok=True, parents=True)
-    
+
     # Create module directory
-    suffix = "" 
+    suffix = ""
     module_call_idx = get_current_step_module_call(module_name)
     if module_call_idx > 1:
         suffix = f"_{module_call_idx-1}"
     module_dir = dump_dir / (module_name + suffix)
     module_dir.mkdir(exist_ok=True, parents=True)
-    logger.debug(f"Logging module {module_name} inputs/outputs to {module_dir}")
+    logger.debug(
+        f"Logging module {module_name} inputs/outputs to {module_dir}")
     return module_dir
+
 
 def update_current_step_module_call(module_name: str) -> None:
     logger.debug(f"Updating current step module call for {module_name}")
     global _CURRENT_STEP_MODULE_CALLS
     if module_name not in _CURRENT_STEP_MODULE_CALLS:
         _CURRENT_STEP_MODULE_CALLS[module_name] = 0
-    
+
     _CURRENT_STEP_MODULE_CALLS[module_name] += 1
 
 
@@ -389,21 +429,25 @@ def get_current_step_module_call(module_name: str) -> int:
     return _CURRENT_STEP_MODULE_CALLS.get(module_name, 0)
 
 
-def prepare_log_current_fwd(module, update_fwd_counter: bool = False) -> Optional[Path]:
+def prepare_log_current_fwd(module,
+                            update_fwd_counter: bool = False
+                            ) -> Optional[Path]:
     il_config = get_current_il_config()
     if il_config is None or not il_config.enabled:
         return
     if not should_log_step(il_config):
         return
-    
+
     module_name = get_il_module_name(module)
     log_call_idx = get_il_module_call_idx(module)
     current_call_idx = get_current_step_module_call(module_name)
     should_log = True
     if log_call_idx >= 0 and current_call_idx != log_call_idx:
         should_log = False
-    
-    print(f"{should_log=} for {module_name}, {current_call_idx=}, {log_call_idx=}")
+
+    print(
+        f"{should_log=} for {module_name}, {current_call_idx=}, {log_call_idx=}"
+    )
     log_dir = None
     if should_log:
         log_dir = _prepare_module_log_dir(il_config, module_name)
@@ -411,7 +455,9 @@ def prepare_log_current_fwd(module, update_fwd_counter: bool = False) -> Optiona
         update_current_step_module_call(module_name)
     return log_dir
 
-def log_pre_fwd_hook(module: torch.nn.Module, inputs: Tuple[Any, ...]) -> Tuple[Any, ...]:
+
+def log_pre_fwd_hook(module: torch.nn.Module,
+                     inputs: Tuple[Any, ...]) -> Tuple[Any, ...]:
     """Hook to capture module inputs before forward pass.
     
     Args:
@@ -427,9 +473,8 @@ def log_pre_fwd_hook(module: torch.nn.Module, inputs: Tuple[Any, ...]) -> Tuple[
     return inputs
 
 
-def log_post_fwd_hook(module: torch.nn.Module, 
-                 inputs: Tuple[Any, ...], 
-                 outputs: Any) -> None:
+def log_post_fwd_hook(module: torch.nn.Module, inputs: Tuple[Any, ...],
+                      outputs: Any) -> None:
     """Hook to capture module outputs after forward pass.
     
     Args:
@@ -443,8 +488,10 @@ def log_post_fwd_hook(module: torch.nn.Module,
         il_config = get_current_il_config()
         assert il_config is not None, "IL config should not be None"
         if il_config.log_post_fwd_inputs:
-            dump_intermediates_to_json(inputs, log_dir / "post_fwd_inputs.json")
+            dump_intermediates_to_json(inputs,
+                                       log_dir / "post_fwd_inputs.json")
             save_tensors(inputs, str(log_dir / "post_fwd_inputs"))
+
 
 def get_step() -> int:
     """Get the current global step counter.
@@ -476,16 +523,17 @@ def reset_step() -> None:
 
 class IntermediatesLogger:
     """Class to manage logging of intermediate tensors during model execution."""
-    
+
     def __init__(self, config: IntermediateLoggingConfig):
         self.config = config
         self.hooks = []
-        
+        logger.debug(f"Created IntermediatesLogger with config: {config}")
         path = Path(config.output_run_dir)
         path.mkdir(exist_ok=True, parents=True)
         # Log configuration
-        logger.info(f"Intermediates will be logged in f{config.output_run_dir}")
-        
+        logger.info(
+            f"Intermediates will be logged in f{config.output_run_dir}")
+
     def register_hooks(self, model: torch.nn.Module) -> None:
         """Register hooks for the model.
         
@@ -496,16 +544,19 @@ class IntermediatesLogger:
         for name, module in model.named_modules():
             if name and should_log_module(self.config, name, module):
                 pre_hook = module.register_forward_pre_hook(log_pre_fwd_hook)
-                logger.debug(f"Registered pre_fwd hook for {module.__class__.__name__}")
+                logger.debug(
+                    f"Registered pre_fwd hook for {module.__class__.__name__}")
                 post_hook = module.register_forward_hook(log_post_fwd_hook)
-                logger.debug(f"Registered post_fwd hook for {module.__class__.__name__}")
+                logger.debug(
+                    f"Registered post_fwd hook for {module.__class__.__name__}"
+                )
                 self.hooks.append((name, module, pre_hook, post_hook))
-        
+
         # Register a step counter hook for the root model
         step_hook = model.register_forward_hook(step_fwd)
         self.hooks.append(("", None, step_hook))
         logger.info(f"Registered hooks for {len(self.hooks)} modules")
-    
+
     def remove_hooks(self) -> None:
         """Remove all registered hooks."""
         for _, _, pre_hook, post_hook in self.hooks:
@@ -513,14 +564,15 @@ class IntermediatesLogger:
                 pre_hook.remove()
             if post_hook is not None:
                 post_hook.remove()
-        
+
         logger.info(f"Removed {len(self.hooks)} hooks")
         self.hooks = []
 
 
-def register_intermediate_hooks(model: torch.nn.Module, 
-                               config: Optional[IntermediateLoggingConfig] = None,
-                               **kwargs) -> IntermediatesLogger:
+def register_intermediate_hooks(
+        model: torch.nn.Module,
+        config: Optional[IntermediateLoggingConfig] = None,
+        **kwargs) -> IntermediatesLogger:
     """Register hooks to log intermediate tensors for a model.
     
     Args:
@@ -533,7 +585,7 @@ def register_intermediate_hooks(model: torch.nn.Module,
     if config is None:
         # Create config from kwargs
         config = IntermediateLoggingConfig.from_dict(kwargs)
-    
+
     logger_instance = IntermediatesLogger(config)
     logger_instance.register_hooks(model)
     return logger_instance
