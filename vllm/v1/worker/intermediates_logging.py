@@ -197,8 +197,7 @@ def convert_intermediates_to_json(tensor: Any) -> Any:
                     
                     # Add statistics
                     try:
-                        result["values_min"] = float(tensor_cpu.min().item()) if tensor_cpu.numel() > 0 else None
-                    except:
+                    except Exception:
                         result["values_min"] = "error"
                         
                     try:

@@ -85,5 +85,4 @@ class WorkerBase(WorkerBaseV0):
             register_intermediate_hooks(model, config, **kwargs)
             # Store the logger instance for potential later hook removal
             logger.info("Successfully registered intermediate hooks")
-        except Exception as e:
-            logger.error(f"Error registering intermediate hooks", e)
+            logger.error("Error registering intermediate hooks", exc_info=True)

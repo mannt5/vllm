@@ -4017,11 +4017,9 @@ class IntermediateLoggingConfig:
                 compiled_pattern: Pattern[str] = re.compile(regex_pattern)
                 self._compiled_module_calls[compiled_pattern] = call_idx
                 logger.info(f"Successfully compiled regex pattern: '{regex_pattern}'")
-            except re.error as e:
-                logger.error(f"Invalid regex pattern from '{regex_pattern_call_idx}': {e}")
-                raise ValueError(f"Invalid regex pattern '{regex_pattern_call_idx}': {e}")
             except Exception as e:
-                logger.error(f"Failed to parse module_call_match")
+                logger.error(f"Failed to parse module_call_match '{regex_pattern_call_idx}': {e}")
+                raise ValueError(f"Failed to parse module_call_match '{regex_pattern_call_idx}': {e}") from e
 
         
         logger.info(f"Compiled {len(self._compiled_module_calls)} regex patterns")
