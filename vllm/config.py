@@ -794,9 +794,8 @@ class ModelConfig:
                     if getattr(pooler_config, k) is None:
                         setattr(pooler_config, k, v)
 
-            default_pooling_type = self.model_info.default_pooling_type
-
             # set default pooler config
+            default_pooling_type = self.model_info.default_pooling_type
             if self.task == "embed":
                 default_pooler_config = PoolerConfig(
                     pooling_type=default_pooling_type,

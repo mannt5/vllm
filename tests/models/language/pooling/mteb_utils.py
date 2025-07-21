@@ -163,6 +163,10 @@ def mteb_test_embed_models(hf_runner,
                            model_info: EmbedModelInfo,
                            vllm_extra_kwargs=None,
                            hf_model_callback=None):
+    if not model_info.enable_test:
+        # A model family has many models with the same architecture,
+        # and we don't need to test each one.
+        pytest.skip("Skipping test.")
 
     vllm_extra_kwargs = vllm_extra_kwargs or {}
     vllm_extra_kwargs["dtype"] = model_info.dtype
@@ -269,6 +273,10 @@ def mteb_test_rerank_models(hf_runner,
                             hf_model_callback=None,
                             vllm_mteb_encoder=VllmMtebEncoder,
                             atol=MTEB_RERANK_TOL):
+    if not model_info.enable_test:
+        # A model family has many models with the same architecture,
+        # and we don't need to test each one.
+        pytest.skip("Skipping test.")
 
     vllm_extra_kwargs = vllm_extra_kwargs or {}
     vllm_extra_kwargs["dtype"] = model_info.dtype
