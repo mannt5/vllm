@@ -10,6 +10,7 @@ from vllm.entrypoints.openai.protocol import (ChatCompletionRequest,
                                               DeltaMessage)
 from vllm.logger import init_logger
 from vllm.reasoning import ReasoningParser, ReasoningParserManager
+from vllm.transformers_utils.tokenizers.mistral import MistralTokenizer
 
 logger = init_logger(__name__)
 
@@ -37,8 +38,19 @@ class DeepSeekR1ReasoningParser(ReasoningParser):
                 "The model tokenizer must be passed to the ReasoningParser "
                 "constructor during construction.")
 
-        self.start_token_id = self.vocab.get(self.start_token)
-        self.end_token_id = self.vocab.get(self.end_token)
+        if isinstance(self.model_tokenizer, MistralTokenizer):
+            from mistral_common.tokens.tokenizers.base import SpecialTokens
+
+            self.start_token = SpecialTokens.begin_think
+            self.end_token = SpecialTokens.end_think
+
+            tokenizer = self.model_tokenizer.tokenizer
+
+            self.start_token_id = tokenizer.get_control_token(self.start_token)
+            self.end_token_id = tokenizer.get_control_token(self.end_token)
+        else:
+            self.start_token_id = self.vocab.get(self.start_token)
+            self.end_token_id = self.vocab.get(self.end_token)
         if self.start_token_id is None or self.end_token_id is None:
             raise RuntimeError(
                 "DeepSeek R1 reasoning parser could not locate think start/end "
