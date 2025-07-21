@@ -991,6 +991,7 @@ def unify_hybrid_kv_cache_specs(kv_cache_spec: dict[str, KVCacheSpec]):
                     dtype=spec.dtype,
                     use_mla=spec.use_mla,
                     sliding_window=spec.sliding_window,
+                    attn_type=str(spec.attn_type),
                 )
             elif isinstance(spec, ChunkedLocalAttentionSpec):
                 kv_cache_spec[layer_name] = FullAttentionSpec(
@@ -1000,6 +1001,7 @@ def unify_hybrid_kv_cache_specs(kv_cache_spec: dict[str, KVCacheSpec]):
                     dtype=spec.dtype,
                     use_mla=spec.use_mla,
                     attention_chunk_size=spec.attention_chunk_size,
+                    attn_type=str(spec.attn_type),
                 )
 
     if is_hybrid(kv_cache_spec):
