@@ -806,7 +806,7 @@ class ModelConfig:
                     pooling_type=default_pooling_type,
                     normalize=False,
                     softmax=True)
-            elif self.task in ["reward", "pooling"]:
+            elif self.task in ["reward", "encode"]:
                 default_pooler_config = PoolerConfig(pooling_type="ALL",
                                                      normalize=False,
                                                      softmax=False)
