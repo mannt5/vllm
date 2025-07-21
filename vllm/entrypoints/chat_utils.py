@@ -157,7 +157,7 @@ class CustomThinkCompletionContentParam(TypedDict, total=False):
     Example:
     {
         "thinking": "I am thinking about the answer",
-        "closed": False
+        "closed": True,
         "type": "thinking"
     }
     """
@@ -165,7 +165,7 @@ class CustomThinkCompletionContentParam(TypedDict, total=False):
     thinking: Required[str]
     """The thinking content."""
 
-    closed: bool = True
+    closed: bool
     """Whether the thinking is closed."""
 
     type: Required[Literal["thinking"]]
