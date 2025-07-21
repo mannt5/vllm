@@ -545,7 +545,7 @@ class Platform:
 
     @classmethod
     def empty_cache(cls):
-        raise NotImplementedError
+        torch.accelerator.empty_cache()
 
     @classmethod
     def reset_peak_memory_stats(cls):
@@ -565,7 +565,7 @@ class Platform:
 
     @classmethod
     def synchronize(cls):
-        raise NotImplementedError
+        torch.accelerator.synchronize()
 
 
 class UnspecifiedPlatform(Platform):

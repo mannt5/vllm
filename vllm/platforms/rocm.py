@@ -456,10 +456,6 @@ class RocmPlatform(Platform):
         return cuda_device_count_stateless()
 
     @classmethod
-    def empty_cache(cls):
-        torch.cuda.empty_cache()
-
-    @classmethod
     def reset_peak_memory_stats(cls):
         torch.cuda.reset_peak_memory_stats()
 
@@ -474,7 +470,3 @@ class RocmPlatform(Platform):
     @classmethod
     def memory_reserved(cls):
         return torch.cuda.memory_reserved()
-
-    @classmethod
-    def synchronize(cls):
-        torch.cuda.synchronize()
