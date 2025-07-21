@@ -398,7 +398,7 @@ std::vector<at::Tensor> moe_fused_gate(at::Tensor& input, at::Tensor& bias,
   bool dispatched = false;
   switch (num_experts) {
     case 256:
-      if (num_expert_group == 8)
+      if (num_expert_group == 8) {
         // This is deepseek v3 case. Here VPT = 256/8 = 32, ROWS_PER_WARP = 32/8
         // = 4, ROWS_PER_CTA = 6 * 4 = 24.
         if (input.scalar_type() == at::kBFloat16) {
@@ -407,7 +407,7 @@ std::vector<at::Tensor> moe_fused_gate(at::Tensor& input, at::Tensor& bias,
           LAUNCH_MOE_GATE_CONFIG(float16_t, 256, 8);
         } else if (input.scalar_type() == at::kFloat) {
           LAUNCH_MOE_GATE_CONFIG(float32_t, 256, 8);
-        } else if (num_expert_group == 16)
+        } else if (num_expert_group == 16) {
           // Here VPT = 256/16 = 16, ROWS_PER_WARP = 32/16 = 2, ROWS_PER_CTA = 6
           // * 2 = 12.
           if (input.scalar_type() == at::kBFloat16) {
@@ -417,9 +417,11 @@ std::vector<at::Tensor> moe_fused_gate(at::Tensor& input, at::Tensor& bias,
           } else if (input.scalar_type() == at::kFloat) {
             LAUNCH_MOE_GATE_CONFIG(float32_t, 256, 16);
           }
+        }
+      }
       break;
     case 128:
-      if (num_expert_group == 4)
+      if (num_expert_group == 4) {
         // VPT = 128/4 = 32, ROWS_PER_WARP = 32/16 = 2, ROWS_PER_CTA = 6 * 2
         // = 12.
         if (input.scalar_type() == at::kBFloat16) {
@@ -428,7 +430,7 @@ std::vector<at::Tensor> moe_fused_gate(at::Tensor& input, at::Tensor& bias,
           LAUNCH_MOE_GATE_CONFIG(float16_t, 128, 4);
         } else if (input.scalar_type() == at::kFloat) {
           LAUNCH_MOE_GATE_CONFIG(float32_t, 128, 4);
-        } else if (num_expert_group == 8)
+        } else if (num_expert_group == 8) {
           // VPT = 128/8 = 16, ROWS_PER_WARP = 32/8 = 4, ROWS_PER_CTA = 6 * 4
           // = 24.
           if (input.scalar_type() == at::kBFloat16) {
@@ -438,6 +440,8 @@ std::vector<at::Tensor> moe_fused_gate(at::Tensor& input, at::Tensor& bias,
           } else if (input.scalar_type() == at::kFloat) {
             LAUNCH_MOE_GATE_CONFIG(float32_t, 128, 8);
           }
+        }
+      }
       break;
     default:
       break;
