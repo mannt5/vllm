@@ -18,7 +18,7 @@ from vllm.model_executor.models.utils import (AutoWeightsLoader, WeightsMapper,
 from vllm.sequence import IntermediateTensors
 
 from .bert_with_rope import BertWithRope, JinaRobertaModel
-from .interfaces import SupportsCrossEncoding, SupportsV0Only
+from .interfaces import CLSPooling, SupportsCrossEncoding, SupportsV0Only
 
 
 class RobertaEmbedding(nn.Module):
@@ -113,7 +113,7 @@ class RobertaClassificationHead(nn.Module):
         return x
 
 
-class RobertaEmbeddingModel(BertEmbeddingModel):
+class RobertaEmbeddingModel(BertEmbeddingModel, CLSPooling):
     """A model that uses Roberta to provide embedding functionalities.
 
    This class encapsulates the BertModel and provides an interface for
@@ -153,7 +153,7 @@ class RobertaEmbeddingModel(BertEmbeddingModel):
 
 
 class RobertaForSequenceClassification(nn.Module, SupportsCrossEncoding,
-                                       SupportsV0Only):
+                                       SupportsV0Only, CLSPooling):
     """A model that uses Roberta to provide embedding functionalities.
 
    This class encapsulates the BertModel and provides an interface for

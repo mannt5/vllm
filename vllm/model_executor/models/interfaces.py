@@ -606,6 +606,17 @@ def supports_cross_encoding(
     return is_pooling_model(model) and _supports_cross_encoding(model)
 
 
+class CLSPooling(Protocol):
+    """The interface required for all models
+    that using cls as default_pooling_type."""
+
+    default_pooling_type: ClassVar[str] = "CLS"
+
+
+def get_default_pooling_type(model: Union[type[object], object]) -> str:
+    return getattr(model, "default_pooling_type", "LAST")
+
+
 class SupportsQuant:
     """The interface required for all models that support quantization."""
 

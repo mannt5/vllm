@@ -794,14 +794,35 @@ class ModelConfig:
                     if getattr(pooler_config, k) is None:
                         setattr(pooler_config, k, v)
 
-            if self.is_matryoshka:
-                if pooler_config.normalize is None:
-                    pooler_config.normalize = True
-                elif not pooler_config.normalize:
-                    raise ValueError(
-                        "`normalize` must be enabled (set to True) "
-                        "for models that are compatible with "
-                        "Matryoshka Representation.")
+            default_pooling_type = self.model_info.default_pooling_type
+
+            # set default pooler config
+            if self.task == "embed":
+                default_pooler_config = PoolerConfig(
+                    pooling_type=default_pooling_type,
+                    normalize=True,
+                    softmax=False)
+            elif self.task == "classify":
+                default_pooler_config = PoolerConfig(
+                    pooling_type=default_pooling_type,
+                    normalize=False,
+                    softmax=True)
+            elif self.task in ["reward", "pooling"]:
+                default_pooler_config = PoolerConfig(pooling_type="ALL",
+                                                     normalize=False,
+                                                     softmax=False)
+            else:
+                raise ValueError(f"Pooling runner does not "
+                                 f"support {self.task} task.")
+
+            for k, v in asdict(default_pooler_config).items():
+                if getattr(pooler_config, k) is None:
+                    setattr(pooler_config, k, v)
+
+            if self.is_matryoshka and not pooler_config.normalize:
+                raise ValueError("`normalize` must be enabled (set to True) "
+                                 "for models that are compatible with "
+                                 "Matryoshka Representation.")
 
             return pooler_config
 
@@ -4645,6 +4666,8 @@ class VllmConfig:
 
         if self.model_config and self.model_config.pooler_config:
             pooling_type = self.model_config.pooler_config.pooling_type
+            # todo:
+            #   We should determine based on attn_type, not pooling_type.
             if pooling_type is None or pooling_type.lower() != "last":
                 disable_chunked_prefill_reasons.append(
                     "Only \"last\" pooling supports chunked "
