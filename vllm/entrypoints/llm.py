@@ -2,7 +2,6 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import itertools
-import warnings
 from collections.abc import Sequence
 from contextlib import contextmanager
 from typing import (TYPE_CHECKING, Any, Callable, ClassVar, Optional, Union,
@@ -38,16 +37,14 @@ from vllm.inputs import PromptType, SingletonPrompt, TextPrompt, TokensPrompt
 from vllm.inputs.parse import parse_and_batch_prompt
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
-from vllm.model_executor.guided_decoding.guided_fields import (
-    GuidedDecodingRequest, LLMGuidedOptions)
 from vllm.model_executor.layers.quantization import QuantizationMethods
 from vllm.outputs import (ClassificationRequestOutput, EmbeddingRequestOutput,
                           PoolingRequestOutput, RequestOutput,
                           ScoringRequestOutput)
 from vllm.pooling_params import PoolingParams, PoolingTask
 from vllm.prompt_adapter.request import PromptAdapterRequest
-from vllm.sampling_params import (BeamSearchParams, GuidedDecodingParams,
-                                  RequestOutputKind, SamplingParams)
+from vllm.sampling_params import (BeamSearchParams, RequestOutputKind,
+                                  SamplingParams)
 from vllm.transformers_utils.tokenizer import (AnyTokenizer, MistralTokenizer,
                                                get_cached_tokenizer)
 from vllm.usage.usage_lib import UsageContext
@@ -315,8 +312,6 @@ class LLM:
         use_tqdm: Union[bool, Callable[..., tqdm]] = True,
         lora_request: Optional[Union[list[LoRARequest], LoRARequest]] = None,
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
-        guided_options_request: Optional[Union[LLMGuidedOptions,
-                                               GuidedDecodingRequest]] = None,
     ) -> list[RequestOutput]:
         ...
 
@@ -331,8 +326,6 @@ class LLM:
         use_tqdm: Union[bool, Callable[..., tqdm]] = True,
         lora_request: Optional[Union[list[LoRARequest], LoRARequest]] = None,
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
-        guided_options_request: Optional[Union[LLMGuidedOptions,
-                                               GuidedDecodingRequest]] = None,
     ) -> list[RequestOutput]:
         ...
 
@@ -347,8 +340,6 @@ class LLM:
         use_tqdm: Union[bool, Callable[..., tqdm]] = True,
         lora_request: Optional[Union[list[LoRARequest], LoRARequest]] = None,
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
-        guided_options_request: Optional[Union[LLMGuidedOptions,
-                                               GuidedDecodingRequest]] = None,
     ) -> list[RequestOutput]:
         ...
 
@@ -364,8 +355,6 @@ class LLM:
         use_tqdm: Union[bool, Callable[..., tqdm]] = True,
         lora_request: Optional[Union[list[LoRARequest], LoRARequest]] = None,
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
-        guided_options_request: Optional[Union[LLMGuidedOptions,
-                                               GuidedDecodingRequest]] = None,
     ) -> list[RequestOutput]:
         ...
 
@@ -381,8 +370,6 @@ class LLM:
         use_tqdm: Union[bool, Callable[..., tqdm]] = True,
         lora_request: Optional[Union[list[LoRARequest], LoRARequest]] = None,
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
-        guided_options_request: Optional[Union[LLMGuidedOptions,
-                                               GuidedDecodingRequest]] = None,
     ) -> list[RequestOutput]:
         ...
 
@@ -396,8 +383,6 @@ class LLM:
         use_tqdm: Union[bool, Callable[..., tqdm]] = True,
         lora_request: Optional[Union[list[LoRARequest], LoRARequest]] = None,
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
-        guided_options_request: Optional[Union[LLMGuidedOptions,
-                                               GuidedDecodingRequest]] = None,
     ) -> list[RequestOutput]:
         ...
 
@@ -416,8 +401,6 @@ class LLM:
         use_tqdm: Union[bool, Callable[..., tqdm]] = True,
         lora_request: Optional[Union[list[LoRARequest], LoRARequest]] = None,
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
-        guided_options_request: Optional[Union[LLMGuidedOptions,
-                                               GuidedDecodingRequest]] = None,
         priority: Optional[list[int]] = None,
     ) -> list[RequestOutput]:
         """Generates the completions for the input prompts.
@@ -479,14 +462,6 @@ class LLM:
             parsed_prompts = cast(Union[PromptType, Sequence[PromptType]],
                                   prompts)
 
-        if isinstance(guided_options_request, dict):
-            if len(guided_options_request) > 1:
-                raise ValueError(
-                    "You can only use one guided decoding but multiple is "
-                    f"specified: {guided_options_request}")
-            guided_options_request = GuidedDecodingRequest(
-                **guided_options_request)
-
         if sampling_params is None:
             # Use default sampling params.
             sampling_params = self.get_default_sampling_params()
@@ -508,7 +483,6 @@ class LLM:
             use_tqdm=use_tqdm,
             lora_request=lora_request,
             prompt_adapter_request=prompt_adapter_request,
-            guided_options=guided_options_request,
             tokenization_kwargs=tokenization_kwargs,
             priority=priority,
         )
@@ -1386,17 +1360,17 @@ class LLM:
         of your inputs into a single list and pass it to this method.
 
         Supports both text and multi-modal data (images, etc.) when used with
-        appropriate multi-modal models. For multi-modal inputs, ensure the 
+        appropriate multi-modal models. For multi-modal inputs, ensure the
         prompt structure matches the model's expected input format.
 
         Args:
-            data_1: Can be a single prompt, a list of prompts or 
-                `ScoreMultiModalParam`, which can contain either text or 
-                multi-modal data. When a list, it must have the same length as 
+            data_1: Can be a single prompt, a list of prompts or
+                `ScoreMultiModalParam`, which can contain either text or
+                multi-modal data. When a list, it must have the same length as
                 the `data_2` list.
-            data_2: The data to pair with the query to form the input to 
+            data_2: The data to pair with the query to form the input to
                 the LLM. Can be text or multi-modal data. See [PromptType]
-                [vllm.inputs.PromptType] for more details about the format of 
+                [vllm.inputs.PromptType] for more details about the format of
                 each prompt.
             use_tqdm: If `True`, shows a tqdm progress bar.
                 If a callable (e.g., `functools.partial(tqdm, leave=False)`),
@@ -1618,17 +1592,8 @@ class LLM:
         lora_request: Optional[Union[Sequence[LoRARequest], LoRARequest]],
         prompt_adapter_request: Optional[PromptAdapterRequest],
         tokenization_kwargs: Optional[dict[str, Any]] = None,
-        guided_options: Optional[GuidedDecodingRequest] = None,
         priority: Optional[list[int]] = None,
     ) -> None:
-        if guided_options is not None:
-            warnings.warn(
-                "guided_options_request is deprecated, use "
-                "SamplingParams.guided_decoding instead",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-
         if isinstance(prompts, (str, dict)):
             # Convert a single prompt to a list.
             prompts = [prompts]
@@ -1644,8 +1609,6 @@ class LLM:
 
         for sp in params if isinstance(params, Sequence) else (params, ):
             if isinstance(sp, SamplingParams):
-                self._add_guided_params(sp, guided_options)
-
                 # We only care about the final output
                 sp.output_kind = RequestOutputKind.FINAL_ONLY
 
@@ -1685,29 +1648,6 @@ class LLM:
             prompt_adapter_request=prompt_adapter_request,
             priority=priority,
         )
-
-    def _add_guided_params(
-            self,
-            params: SamplingParams,
-            guided_options: Optional[GuidedDecodingRequest] = None):
-        if guided_options is None:
-            return params
-
-        if params.guided_decoding is not None:
-            raise ValueError("Cannot set both guided_options_request and "
-                             "params.guided_decoding.")
-
-        params.guided_decoding = GuidedDecodingParams(
-            json=guided_options.guided_json,
-            regex=guided_options.guided_regex,
-            choice=guided_options.guided_choice,
-            grammar=guided_options.guided_grammar,
-            json_object=guided_options.guided_json_object,
-            backend=guided_options.guided_decoding_backend,
-            whitespace_pattern=guided_options.guided_whitespace_pattern,
-            structural_tag=guided_options.structural_tag,
-        )
-        return params
 
     def _run_engine(
         self,
