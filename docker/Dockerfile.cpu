@@ -51,9 +51,23 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,src=requirements/common.txt,target=requirements/common.txt \
     --mount=type=bind,src=requirements/cpu.txt,target=requirements/cpu.txt \
     uv pip install --upgrade pip && \
-    uv pip install -r requirements/cpu.txt
+    uv pip install -r requirements/cpu.txt && \
+    uv pip install py-cpuinfo # Use this to gather CPU info and optimize based on ARM Neoverse cores
 
-ENV LD_PRELOAD="/usr/lib/x86_64-linux-gnu/libtcmalloc_minimal.so.4:/opt/venv/lib/libiomp5.so:$LD_PRELOAD"
+ARG TARGETARCH
+ENV TARGETARCH=${TARGETARCH}
+
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
+        LIBTCMALLOC_PATH="/usr/lib/aarch64-linux-gnu/libtcmalloc_minimal.so.4"; \
+    else \
+        LIBTCMALLOC_PATH="/usr/lib/x86_64-linux-gnu/libtcmalloc_minimal.so.4:/opt/venv/lib/libiomp5.so"; \
+    fi && \
+    echo "export LD_PRELOAD=$LIBTCMALLOC_PATH" >> ~/.bashrc
+
+# Ensure that the LD_PRELOAD environment variable for export is in effect.
+SHELL ["/bin/bash", "-c"]
+
+ENV LD_PRELOAD=${LD_PRELOAD}
 
 RUN echo 'ulimit -c 0' >> ~/.bashrc
 
