@@ -459,6 +459,22 @@ class CudaPlatformBase(Platform):
     def device_count(cls) -> int:
         return cuda_device_count_stateless()
 
+    @classmethod
+    def reset_peak_memory_stats(cls):
+        torch.cuda.reset_peak_memory_stats()
+
+    @classmethod
+    def mem_get_info(cls):
+        return torch.cuda.mem_get_info()
+
+    @classmethod
+    def memory_stats(cls):
+        return torch.cuda.memory_stats()
+
+    @classmethod
+    def memory_reserved(cls):
+        return torch.cuda.memory_reserved()
+
 
 # NVML utils
 # Note that NVML is not affected by `CUDA_VISIBLE_DEVICES`,
