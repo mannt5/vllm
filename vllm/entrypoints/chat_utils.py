@@ -1351,3 +1351,13 @@ def apply_mistral_chat_template(
 
 def random_tool_call_id() -> str:
     return f"chatcmpl-tool-{random_uuid()}"
+
+def get_history_tool_calls_cnt(conversation: list[ConversationMessage]):
+    idx = 0
+    for msg in conversation:
+        if msg['role'] == 'assistant':
+            idx += len(msg.get('tool_calls') or [])
+    return idx
+
+def make_kimi_k2_tool_id(func_name: str, idx: int):
+    return f"functions.{func_name}:{idx}"
