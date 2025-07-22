@@ -16,6 +16,7 @@ import zmq
 
 from vllm.config import CacheConfig, ParallelConfig, VllmConfig
 from vllm.logger import init_logger
+from vllm.platforms import current_platform
 from vllm.ray.ray_env import get_env_vars_to_copy
 from vllm.utils import get_mp_context, get_open_zmq_ipc_path, zmq_socket_ctx
 from vllm.v1.engine.coordinator import DPCoordinator
@@ -105,10 +106,13 @@ class CoreEngineProcManager:
                 "client_handshake_address"] = client_handshake_address
 
         self.processes: list[BaseProcess] = []
+        local_dp_ranks = []
         for index in range(local_engine_count):
             local_index = local_start_index + index
             global_index = start_index + index
+
             # Start EngineCore in background process.
+            local_dp_ranks.append(local_index)
             self.processes.append(
                 context.Process(target=target_fn,
                                 name=f"EngineCore_{global_index}",
@@ -118,9 +122,36 @@ class CoreEngineProcManager:
                                 }))
 
         self._finalizer = weakref.finalize(self, shutdown, self.processes)
+
+        evar = current_platform.device_control_env_var
+        world_size = vllm_config.parallel_config.world_size
+        dp_size = vllm_config.parallel_config.data_parallel_size
         try:
-            for proc in self.processes:
+            for proc, local_dp_rank in zip(self.processes, local_dp_ranks):
+                # Set CUDA_VISIBLE_DEVICES or equivalent if we have DP
+                original_value = os.environ.get(evar, None)
+                if dp_size > 1:
+                    try:
+                        os.environ[evar] = ",".join(
+                            str(
+                                current_platform.
+                                device_id_to_physical_device_id(i))
+                            for i in range(local_dp_rank *
+                                           world_size, (local_dp_rank + 1) *
+                                           world_size))
+                    except IndexError as e:
+                        raise Exception(
+                            f"Error setting {evar}: "
+                            f"local range: [{local_dp_rank * world_size}, "
+                            f"{(local_dp_rank + 1) * world_size}) "
+                            "base value: "
+                            f"\"{os.getenv(evar)}\"") from e
+
                 proc.start()
+                if original_value is None and evar in os.environ:
+                    del os.environ[evar]
+                elif original_value is not None:
+                    os.environ[evar] = original_value
         finally:
             # Kill other procs if not all are running.
             if self.finished_procs():
