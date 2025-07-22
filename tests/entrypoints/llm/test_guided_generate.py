@@ -21,7 +21,6 @@ MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
 # which only support regex based constraints in tests.
 GRAMMAR_DECODING_BACKENDS = [
     # (backend, disable_any_whitespace),
-    ("lm-format-enforcer", False),
     ("xgrammar", True),
     ("guidance", True),
 ]

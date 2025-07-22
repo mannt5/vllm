@@ -51,7 +51,7 @@ def test_unsupported_configs(monkeypatch):
         with pytest.raises(NotImplementedError):
             AsyncEngineArgs(
                 model=MODEL,
-                guided_decoding_backend="lm-format-enforcer",
+                guided_decoding_backend="outlines",
                 guided_decoding_disable_fallback=True,
             ).create_engine_config()
 

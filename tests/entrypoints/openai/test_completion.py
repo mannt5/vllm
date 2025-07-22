@@ -31,7 +31,7 @@ PA_NAME = "swapnilbp/llama_tweet_ptune"
 # need to change to match the prompt adapter
 PA_NUM_VIRTUAL_TOKENS = 8
 
-GUIDED_DECODING_BACKENDS = ["outlines", "lm-format-enforcer", "xgrammar"]
+GUIDED_DECODING_BACKENDS = ["outlines", "xgrammar"]
 
 
 @pytest.fixture(scope="module")

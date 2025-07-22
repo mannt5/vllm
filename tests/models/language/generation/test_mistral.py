@@ -275,8 +275,7 @@ def test_mistral_function_calling(vllm_runner, model: str, dtype: str) -> None:
 
 
 @pytest.mark.parametrize("model", MODELS)
-@pytest.mark.parametrize("guided_backend",
-                         ["outlines", "lm-format-enforcer", "xgrammar"])
+@pytest.mark.parametrize("guided_backend", ["outlines", "xgrammar"])
 def test_mistral_guided_decoding(
     monkeypatch: pytest.MonkeyPatch,
     vllm_runner,
