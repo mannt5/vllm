@@ -43,11 +43,7 @@ def test_decode_only_classify(
 
 
 @pytest.mark.parametrize(
-    "model", ["intfloat/e5-small"]
-    # todo
-    #  Alibaba-NLP/gte-Qwen2-1.5B-instruct uses encoder only attn
-    #  the enable_prefix_caching should not be used.
-)
+    "model", ["intfloat/e5-small", "Alibaba-NLP/gte-Qwen2-1.5B-instruct"])
 @pytest.mark.parametrize("dtype", ["half"])
 def test_encode_only_classify(
     hf_runner,
@@ -57,6 +53,9 @@ def test_encode_only_classify(
     dtype: str,
     monkeypatch,
 ) -> None:
+    if model == "Alibaba-NLP/gte-Qwen2-1.5B-instruct":
+        monkeypatch.setenv("VLLM_USE_V1", "0")
+
     with vllm_runner(model,
                      max_model_len=512,
                      dtype=dtype,
