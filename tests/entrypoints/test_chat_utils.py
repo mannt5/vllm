@@ -1501,11 +1501,10 @@ def test_apply_mistral_chat_template_thinking_chunk():
     mistral_tokenizer = MistralTokenizer.from_pretrained(
         "mistralai/Magistral-Small-2507")
 
-    tokens_ids = apply_mistral_chat_template(
-        MistralTokenizer.from_pretrained("mistralai/Magistral-Small-2507"),
-        messages,
-        chat_template=None,
-        tools=None)
+    tokens_ids = apply_mistral_chat_template(mistral_tokenizer,
+                                             messages,
+                                             chat_template=None,
+                                             tools=None)
 
     string_tokens = mistral_tokenizer.mistral.decode(
         tokens_ids, special_token_policy=SpecialTokenPolicy.KEEP)
