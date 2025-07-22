@@ -295,9 +295,11 @@ class EngineArgs:
     tensor_parallel_size: int = ParallelConfig.tensor_parallel_size
     data_parallel_size: int = ParallelConfig.data_parallel_size
     data_parallel_rank: Optional[int] = None
+    data_parallel_start_rank: Optional[int] = None
     data_parallel_size_local: Optional[int] = None
     data_parallel_address: Optional[str] = None
     data_parallel_rpc_port: Optional[int] = None
+    data_parallel_hybrid_lb: bool = False
     data_parallel_backend: str = ParallelConfig.data_parallel_backend
     enable_expert_parallel: bool = ParallelConfig.enable_expert_parallel
     enable_eplb: bool = ParallelConfig.enable_eplb
@@ -606,6 +608,11 @@ class EngineArgs:
             type=int,
             help='Data parallel rank of this instance. '
             'When set, enables external load balancer mode.')
+        parallel_group.add_argument('--data-parallel-start-rank',
+                                    '-dpr',
+                                    type=int,
+                                    help='Starting data parallel rank '
+                                    'for secondary nodes.')
         parallel_group.add_argument('--data-parallel-size-local',
                                     '-dpl',
                                     type=int,
@@ -627,6 +634,9 @@ class EngineArgs:
                                     default='mp',
                                     help='Backend for data parallel, either '
                                     '"mp" or "ray".')
+        parallel_group.add_argument(
+            "--data-parallel-hybrid-lb",
+            **parallel_kwargs["data_parallel_hybrid_lb"])
         parallel_group.add_argument(
             "--enable-expert-parallel",
             **parallel_kwargs["enable_expert_parallel"])
@@ -1092,13 +1102,31 @@ class EngineArgs:
             placement_group = ray.util.get_current_placement_group()
 
         data_parallel_external_lb = self.data_parallel_rank is not None
+        # Local DP rank = 1, use pure-external LB.
         if data_parallel_external_lb:
             assert self.data_parallel_size_local in (1, None), (
                 "data_parallel_size_local must be 1 when data_parallel_rank "
                 "is set")
             data_parallel_size_local = 1
+            # Use full external lb if we have local_size of 1.
+            self.data_parallel_hybrid_lb = False
+        # Local DP rank > 1, use hybrid LB.
+        elif self.data_parallel_hybrid_lb:
+            assert self.data_parallel_start_rank is not None, (
+                "data_parallel_start_rank must be set to use "
+                "data_parallel_hybrid_lb.")
+            assert self.data_parallel_size_local is not None, (
+                "data_parallel_size_local must be set to use "
+                "data_parallel_hybrid_lb.")
+            # Use full external lb if we have local_size of 1.
+            if self.data_parallel_size_local == 1:
+                data_parallel_external_lb = True
+                self.data_parallel_hybrid_lb = False
+            data_parallel_size_local = self.data_parallel_size_local
+            self.data_parallel_rank = self.data_parallel_start_rank
         elif self.data_parallel_size_local is not None:
             data_parallel_size_local = self.data_parallel_size_local
+            self.data_parallel_rank = self.data_parallel_start_rank
         else:
             # Local DP size defaults to global DP size if not set.
             data_parallel_size_local = self.data_parallel_size
@@ -1156,6 +1184,7 @@ class EngineArgs:
             data_parallel_master_ip=data_parallel_address,
             data_parallel_rpc_port=data_parallel_rpc_port,
             data_parallel_backend=self.data_parallel_backend,
+            data_parallel_hybrid_lb=self.data_parallel_hybrid_lb,
             enable_expert_parallel=self.enable_expert_parallel,
             enable_eplb=self.enable_eplb,
             num_redundant_experts=self.num_redundant_experts,
