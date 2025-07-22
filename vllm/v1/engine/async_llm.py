@@ -40,6 +40,7 @@ from vllm.v1.metrics.loggers import StatLoggerFactory, StatLoggerManager
 from vllm.v1.metrics.prometheus import shutdown_prometheus
 from vllm.v1.metrics.stats import IterationStats
 
+
 logger = init_logger(__name__)
 
 
@@ -437,6 +438,7 @@ class AsyncLLM(EngineClient):
         lora_request: Optional[LoRARequest] = None,
         trace_headers: Optional[Mapping[str, str]] = None,
         priority: int = 0,
+        tokenization_kwargs: Optional[dict[str, Any]] = None,
     ) -> AsyncGenerator[PoolingRequestOutput, None]:
         """
         Main function called by the API server to kick off a request
@@ -465,6 +467,7 @@ class AsyncLLM(EngineClient):
                 lora_request=lora_request,
                 trace_headers=trace_headers,
                 priority=priority,
+                tokenization_kwargs=tokenization_kwargs,
             )
 
             # The output_handler task pushes items into the queue.
