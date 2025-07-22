@@ -45,6 +45,7 @@ from vllm.sequence import IntermediateTensors
 from vllm.utils import (STR_DTYPE_TO_TORCH_DTYPE, DeviceMemoryProfiler,
                         GiB_bytes, LazyLoader, check_use_alibi, get_dtype_size,
                         is_pin_memory_available, round_up)
+from vllm.v1.attention.backends.mamba1_attn import Mamba1AttentionBackend
 from vllm.v1.attention.backends.mamba_attn import Mamba2AttentionBackend
 from vllm.v1.attention.backends.utils import (
     AttentionMetadataBuilder, CommonAttentionMetadata,
@@ -53,7 +54,7 @@ from vllm.v1.core.encoder_cache_manager import compute_encoder_budget
 from vllm.v1.kv_cache_interface import (AttentionSpec,
                                         ChunkedLocalAttentionSpec,
                                         FullAttentionSpec, KVCacheConfig,
-                                        KVCacheSpec, MambaSpec,
+                                        KVCacheSpec, MambaSpec, MambaType,
                                         SlidingWindowSpec)
 from vllm.v1.outputs import (EMPTY_MODEL_RUNNER_OUTPUT, LogprobsTensors,
                              ModelRunnerOutput)
@@ -2426,7 +2427,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                         "Non-Attention backend is not supported by V1 "
                         "GPUModelRunner.")
             elif isinstance(kv_cache_spec, MambaSpec):
-                attn_backend_i = Mamba2AttentionBackend
+                attn_backend_i = self._get_mamba_attention_backend(
+                    kv_cache_spec)
             else:
                 raise ValueError(
                     f"Unknown KV cache spec type: {type(kv_cache_spec)}")
@@ -2446,6 +2448,13 @@ class GPUModelRunner(LoRAModelRunnerMixin):
 
             self.attn_backends.append(attn_backend_i)
             self.attn_metadata_builders.append(attn_metadata_builder_i)
+
+    def _get_mamba_attention_backend(
+            self, kv_cache_spec: MambaSpec) -> AttentionBackend:
+        if kv_cache_spec.mamba_type == MambaType.MAMBA1:
+            return Mamba1AttentionBackend
+
+        return Mamba2AttentionBackend
 
     def may_reinitialize_input_batch(self,
                                      kv_cache_config: KVCacheConfig) -> None:
@@ -2759,6 +2768,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                     shapes=mamba_module.get_state_shape(),
                     dtype=self.kv_cache_dtype,
                     block_size=max_model_len,
-                    page_size_padded=page_size_padded)
+                    page_size_padded=page_size_padded,
+                    mamba_type=mamba_module.mamba_type)
 
         return kv_cache_spec

@@ -21,7 +21,7 @@ from vllm.model_executor.layers.mamba.abstract import MambaBase
 from vllm.model_executor.layers.mamba.mamba2_metadata import (Mamba2Metadata,
                                                               update_metadata)
 from vllm.model_executor.layers.mamba.mamba_utils import (
-    extra_groups_for_head_shards, get_mamba_state_shape)
+    MambaStateShapeCalculator)
 from vllm.model_executor.layers.mamba.ops.causal_conv1d import (
     causal_conv1d_fn, causal_conv1d_update)
 from vllm.model_executor.layers.mamba.ops.mamba_ssm import (
@@ -36,6 +36,7 @@ from vllm.model_executor.utils import set_weight_attrs
 from vllm.platforms import current_platform
 from vllm.utils import direct_register_custom_op
 from vllm.v1.attention.backends.mamba_attn import Mamba2AttentionMetadata
+from vllm.v1.kv_cache_interface import MambaType
 
 # Added by the IBM Team, 2024
 
@@ -283,8 +284,9 @@ class MambaMixer2(MambaBase, CustomOp):
             # - for TP we shard conv_dim by sharding on n_groups,
             # - but if n_groups cannot divide tp_size, we need to
             #   extend some extra groups
-            self.n_groups = n_groups + extra_groups_for_head_shards(
+            groups = MambaStateShapeCalculator.extra_groups_for_head_shards(
                 n_groups, self.tp_size)
+            self.n_groups = n_groups + groups
 
         self.conv_dim = intermediate_size + 2 * self.n_groups * ssm_state_size
         self.conv1d = ColumnParallelLinear(
@@ -727,7 +729,7 @@ class MambaMixer2(MambaBase, CustomOp):
         output[:num_actual_tokens], _ = self.out_proj(hidden_states)
 
     def get_state_shape(self) -> tuple[tuple[int, ...], tuple[int, ...]]:
-        return get_mamba_state_shape(
+        return MambaStateShapeCalculator.mamba2_state_shape(
             intermediate_size=self.intermediate_size,
             tp_world_size=get_tensor_model_parallel_world_size(),
             n_groups=self.n_groups,
@@ -736,6 +738,10 @@ class MambaMixer2(MambaBase, CustomOp):
             state_size=self.ssm_state_size,
             conv_kernel=self.conv_kernel_size,
         )
+
+    @property
+    def mamba_type(self) -> MambaType:
+        return MambaType.MAMBA2
 
 
 def mamba_mixer2(
