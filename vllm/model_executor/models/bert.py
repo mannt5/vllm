@@ -29,8 +29,8 @@ from vllm.model_executor.pooling_metadata import PoolingMetadata
 from vllm.pooling_params import PoolingTask
 from vllm.sequence import IntermediateTensors
 
-from .interfaces import (CLSPooling, SupportsCrossEncoding, SupportsQuant,
-                         SupportsV0Only)
+from .interfaces import (SupportsCrossEncoding, SupportsQuant, SupportsV0Only,
+                         default_pooling_type)
 from .utils import AutoWeightsLoader, WeightsMapper, maybe_prefix
 
 
@@ -338,7 +338,8 @@ class BertOutput(nn.Module):
         return hidden_states
 
 
-class BertModel(nn.Module, SupportsQuant, CLSPooling):
+@default_pooling_type("CLS")
+class BertModel(nn.Module, SupportsQuant):
 
     is_pooling_model = True
 
@@ -448,7 +449,8 @@ class BertPoolingModel(BertModel):
         return loaded_params
 
 
-class BertEmbeddingModel(nn.Module, SupportsV0Only, SupportsQuant, CLSPooling):
+@default_pooling_type("CLS")
+class BertEmbeddingModel(nn.Module, SupportsV0Only, SupportsQuant):
     """A model that uses Bert to provide embedding functionalities.
 
     This class encapsulates the BertModel and provides an interface for
@@ -513,9 +515,9 @@ class BertEmbeddingModel(nn.Module, SupportsV0Only, SupportsQuant, CLSPooling):
         })
 
 
+@default_pooling_type("CLS")
 class BertForSequenceClassification(nn.Module, SupportsV0Only,
-                                    SupportsCrossEncoding, SupportsQuant,
-                                    CLSPooling):
+                                    SupportsCrossEncoding, SupportsQuant):
     """A model that uses Bert to provide embedding functionalities.
 
    This class encapsulates the BertModel and provides an interface for

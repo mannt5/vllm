@@ -606,11 +606,13 @@ def supports_cross_encoding(
     return is_pooling_model(model) and _supports_cross_encoding(model)
 
 
-class CLSPooling(Protocol):
-    """The interface required for all models
-    that using cls as default_pooling_type."""
+def default_pooling_type(pooling_type):
+    # set default_pooling_type decorator
+    def func(model):
+        model.default_pooling_type = pooling_type
+        return model
 
-    default_pooling_type: ClassVar[str] = "CLS"
+    return func
 
 
 def get_default_pooling_type(model: Union[type[object], object]) -> str:

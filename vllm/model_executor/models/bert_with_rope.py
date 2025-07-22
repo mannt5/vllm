@@ -24,7 +24,8 @@ from vllm.model_executor.layers.vocab_parallel_embedding import (
     VocabParallelEmbedding)
 from vllm.model_executor.model_loader.weight_utils import default_weight_loader
 from vllm.model_executor.models import SupportsV0Only
-from vllm.model_executor.models.interfaces import CLSPooling, SupportsQuant
+from vllm.model_executor.models.interfaces import (SupportsQuant,
+                                                   default_pooling_type)
 from vllm.model_executor.models.utils import WeightsMapper
 from vllm.sequence import IntermediateTensors
 
@@ -398,7 +399,8 @@ class BertWithRopeEncoder(nn.Module):
         return hidden_states
 
 
-class BertWithRope(nn.Module, SupportsV0Only, SupportsQuant, CLSPooling):
+@default_pooling_type("CLS")
+class BertWithRope(nn.Module, SupportsV0Only, SupportsQuant):
     hf_to_vllm_mapper = WeightsMapper(orig_to_new_prefix={"model.": ""})
 
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
