@@ -578,6 +578,7 @@ class MQLLMEngineClient(EngineClient):
                     prompt_adapter_request=prompt_adapter_request,
                     priority=priority,
                 ))
+
             # 3) Send the RPCGenerateRequest to the MQLLMEngine.
             parts = (request_bytes,
                      lp_bytes) if lp_bytes else (request_bytes, )

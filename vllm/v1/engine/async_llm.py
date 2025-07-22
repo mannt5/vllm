@@ -346,16 +346,15 @@ class AsyncLLM(EngineClient):
             if self.log_requests:
                 logger.info("Request %s failed (engine dead).", request_id)
             raise
-
-        # Request validation error.
-        except ValueError:
-            if self.log_requests:
-                logger.info("Request %s failed (bad request).", request_id)
-            raise
         except SchedulerWaitingQueueFullError:
             if self.log_requests:
                 logger.info("Request %s failed (waiting queue full).",
                             request_id)
+            raise
+        # Request validation error.
+        except ValueError:
+            if self.log_requests:
+                logger.info("Request %s failed (bad request).", request_id)
             raise
         # Unexpected error in the generate() task (possibly recoverable).
         except Exception as e:
@@ -518,16 +517,18 @@ class AsyncLLM(EngineClient):
                 logger.info("Request %s failed (engine dead).", request_id)
             raise
 
-        # Request validation error.
-        except ValueError:
-            if self.log_requests:
-                logger.info("Request %s failed (bad request).", request_id)
-            raise
         except SchedulerWaitingQueueFullError:
             if self.log_requests:
                 logger.info("Request %s failed (waiting queue full).",
                             request_id)
             raise
+
+        # Request validation error.
+        except ValueError:
+            if self.log_requests:
+                logger.info("Request %s failed (bad request).", request_id)
+            raise
+
         # Unexpected error in the generate() task (possibly recoverable).
         except Exception as e:
             await self.abort(request_id)
