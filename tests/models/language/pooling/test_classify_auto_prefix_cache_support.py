@@ -25,7 +25,7 @@ def test_decode_only_classify(
                      max_model_len=512,
                      dtype=dtype,
                      enable_prefix_caching=True) as vllm_model:
-        cache_config = vllm_model.model.llm_engine.cache_config
+        cache_config = vllm_model.llm.llm_engine.cache_config
         assert cache_config.enable_prefix_caching
         vllm_outputs = vllm_model.classify(example_prompts)
 
@@ -60,5 +60,5 @@ def test_encode_only_classify(
                      max_model_len=512,
                      dtype=dtype,
                      enable_prefix_caching=True) as vllm_model:
-        cache_config = vllm_model.model.llm_engine.cache_config
+        cache_config = vllm_model.llm.llm_engine.cache_config
         assert not cache_config.enable_prefix_caching
